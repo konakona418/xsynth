@@ -1,0 +1,13 @@
+[project]
+name = "rv32i-soft"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "amaranth>=0.5.8",
+    "amaranth-boards>=0.0.9",
+    "apycula>=0.31",
+    "yowasp-nextpnr-himbaechel-gowin>=0.10.0.0.post753",
+    "yowasp-yosys>=0.64.0.0.post1131",
+]
