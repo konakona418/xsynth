@@ -1,7 +1,7 @@
 """The phase 3 SoC: a real PicoRV32 running what the loader wrote."""
 
-from xsynth.firmware import build_firmware
-from xsynth.sim.soc import HALT_PROGRAM, MAGIC, simulate
+from xsynth.firmware import FIRMWARE_MAGIC, build_firmware
+from xsynth.sim.soc import HALT_PROGRAM, simulate
 
 # Reads a word that the loader put at index 16 and copies it to the status
 # register, which proves the loader can reach past the program.
@@ -60,5 +60,5 @@ def test_the_real_firmware_runs():
         int.from_bytes(image[start:start + 4].ljust(4, b"\0"), "little")
         for start in range(0, len(image), 4)
     ]
-    result = simulate(program, condition=f"status === 32'h{MAGIC:08X}")
+    result = simulate(program, condition=f"status === 32'h{FIRMWARE_MAGIC:08X}")
     assert "PASS" in result.output

@@ -351,9 +351,37 @@ Phase 2 实际结果：
 - 资源：4504 LUT4 (52%)、2443 DFF (37%)、12/26 BSRAM；整次构建约 5m45s
   （CPU 让 LUT 翻倍，nextpnr 布局器对密度超线性）。
 
-#### Phase 3b 待做
+#### Phase 3b 实际结果（已上板验证）
 
-PCPI、firmware 接管 voice allocation 与 sequencing、命令改走 CPU。
+- **命令路径改走 CPU**：UART → 硬件解码/CRC → `FrameMailbox` → 固件解析 →
+  PCPI custom instruction → command FIFO → scheduler → voice。
+- `xsynth/hdl/pcpi.py`：custom-0 指令 `xsynth.push {rs2, rs1}`（funct3=0）把
+  64-bit 命令写入 FIFO；FIFO 满时断言 `pcpi_wait` 停住 CPU，否则 `pcpi_ready`
+  完成。funct3=1 读回 FIFO level。
+- `xsynth/hdl/mailbox.py`：只转发 `PKT_COMMANDS`；每帧用 header word 宣告
+  （bit15 标志、bits 13:8 body 长度、bits 7:0 packet type），body 逐字节跟随。
+  type 放进 header 而不是单独占一个字节，避免固件和硬件对「type 算不算长度」
+  产生分歧。
+- `PacketHandler(forward_commands=True)`：Phase 3 下 handler 只做长度校验，
+  不再写 FIFO（只有一个驱动源）。
+- 新 MMIO：`+0x10` RX_DATA（读弹出、写 flush）、`+0x14` RX_STATUS
+  （`{frames, overflow, empty}`）、`+0x18` REG_COMMANDS（固件转发的命令数）。
+  `REG_STATUS` 开机写入 `0x5853594e`（"XSYN"）作为固件身份。
+- 验证：`xsynth/sim/phase3.py` + `tests/test_phase3.py` 在 iverilog 下跑完整链路；
+  `tests/test_pcpi.py` 在 depth=4 的 FIFO 上直接验证「满则 stall、不丢命令」。
+  板上 `load` 后 `cpu_stat=0x5853594e`，`note-on --hz 440 --wave saw` 采集到
+  440.1 Hz、谐波 1/n（0.516/0.336/0.256/0.203…）的锯齿波。
+- 测试总数 111。
+- 资源：4833 LUT4 (55%)、2542 DFF (39%)、12/26 BSRAM；co-processor + mailbox
+  约比 3a 多 330 LUT / 100 DFF，构建时间不变（约 6 分钟）。
+
+#### Phase 3b 的两个真坑（已写入 HANDOFF gotchas）
+
+- MMIO 读有两个周期：`address_phase` 是地址周期，CPU 在下一拍 `ready` 才采样
+  `mem_rdata`。读时「产生副作用」的寄存器（弹出 FIFO）必须作用在 `ready` 上，
+  否则每次读都返回相邻项 —— 症状像成帧 bug，其实不是。
+- strobe 寄存器必须有显式默认值，否则会永久锁存为 1；默认赋值要写在条件块
+  **之前**（Amaranth 同域内后写覆盖先写）。
 
 ### Phase 4：完整基础 synth engine
 

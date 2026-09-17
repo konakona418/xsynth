@@ -41,6 +41,9 @@ REG_STATUS = 0x00    # scratch: the firmware writes, the host reads
 REG_COUNTER = 0x04   # free running, so the host can see the CPU is alive
 REG_CONTROL = 0x08   # write bit 0 to halt; reads back {run, halted}
 REG_SAMPLES = 0x0C   # the 48 kHz sample counter, from the audio domain
+REG_RX_DATA = 0x10   # read pops a mailbox word; write flushes the mailbox
+REG_RX_STATUS = 0x14 # {frames, overflow, empty}
+REG_COMMANDS = 0x18  # commands the firmware has pushed into the engine
 
 DEFAULT_MEM_WORDS = 2048
 
@@ -64,7 +67,7 @@ def install_cpu_sources(platform) -> None:
 class PicoRV32(Elaboratable):
     """The vendored PicoRV32 core as an Amaranth black box.
 
-    Only the native memory interface is wired up. PCPI, interrupts and the
+    The native memory interface and PCPI are wired up. Interrupts and the
     look-ahead interface exist as ports because the module always has them, but
     nothing drives them yet; the core is built without the multiply, divide and
     compressed-ISA options so that it stays small.
@@ -124,7 +127,7 @@ class PicoRV32(Elaboratable):
             p_COMPRESSED_ISA=0,
             p_CATCH_MISALIGN=1,
             p_CATCH_ILLINSN=1,
-            p_ENABLE_PCPI=0,
+            p_ENABLE_PCPI=1,
             p_ENABLE_MUL=0,
             p_ENABLE_FAST_MUL=0,
             p_ENABLE_DIV=0,
@@ -193,6 +196,28 @@ class SoC(Elaboratable):
         self.status = Signal(32)
         self.counter = Signal(32)
         self.samples = Signal(32)
+        self.commands = Signal(32)
+
+        # The mailbox: the validated frame bytes the firmware parses. The core
+        # owns the mailbox module; the SoC only exposes its read side.
+        self.mailbox_data = Signal(16)
+        self.mailbox_empty = Signal()
+        self.mailbox_pop = Signal()
+        self.mailbox_overflow = Signal()
+        self.mailbox_frames = Signal(16)
+        self.mailbox_pushed = Signal(16)
+        self.mailbox_popped = Signal(16)
+        self.mailbox_flush = Signal()
+
+        # PCPI, passed through to whoever implements the custom instructions.
+        self.pcpi_valid = Signal()
+        self.pcpi_insn = Signal(32)
+        self.pcpi_rs1 = Signal(32)
+        self.pcpi_rs2 = Signal(32)
+        self.pcpi_wr = Signal()
+        self.pcpi_rd = Signal(32)
+        self.pcpi_wait = Signal()
+        self.pcpi_ready = Signal()
 
     def elaborate(self, platform):
         m = Module()
@@ -200,6 +225,17 @@ class SoC(Elaboratable):
 
         cpu = PicoRV32(mem_words=self.mem_words)
         m.submodules.cpu = cpu
+
+        m.d.comb += [
+            self.pcpi_valid.eq(cpu.pcpi_valid),
+            self.pcpi_insn.eq(cpu.pcpi_insn),
+            self.pcpi_rs1.eq(cpu.pcpi_rs1),
+            self.pcpi_rs2.eq(cpu.pcpi_rs2),
+            cpu.pcpi_wr.eq(self.pcpi_wr),
+            cpu.pcpi_rd.eq(self.pcpi_rd),
+            cpu.pcpi_wait.eq(self.pcpi_wait),
+            cpu.pcpi_ready.eq(self.pcpi_ready),
+        ]
 
         addr_bits = (self.mem_words - 1).bit_length()
 
@@ -245,6 +281,10 @@ class SoC(Elaboratable):
             mmio_write.eq(address_phase & (cpu.mem_wstrb != 0) & ~in_memory)
         ]
 
+        # The flush is a strobe, not a level: default it low first, so the
+        # write case below can override it for exactly one cycle.
+        d += self.mailbox_flush.eq(0)
+
         with m.If(mmio_write):
             with m.Switch(offset):
                 with m.Case(REG_STATUS):
@@ -252,6 +292,10 @@ class SoC(Elaboratable):
                 with m.Case(REG_CONTROL):
                     with m.If(cpu.mem_wdata[0]):
                         d += halted.eq(1)
+                with m.Case(REG_RX_DATA):
+                    d += self.mailbox_flush.eq(1)
+                with m.Case(REG_COMMANDS):
+                    d += self.commands.eq(cpu.mem_wdata)
 
         # Dropping run clears the halt, so the next run starts from the reset
         # vector rather than re-halting on its first store.
@@ -276,8 +320,24 @@ class SoC(Elaboratable):
                 m.d.comb += mmio_read.eq(Cat(halted, self.run))
             with m.Case(REG_SAMPLES):
                 m.d.comb += mmio_read.eq(self.samples)
+            with m.Case(REG_RX_DATA):
+                m.d.comb += mmio_read.eq(self.mailbox_data)
+            with m.Case(REG_RX_STATUS):
+                m.d.comb += mmio_read.eq(
+                    Cat(self.mailbox_empty, self.mailbox_overflow,
+                        self.mailbox_frames))
+            with m.Case(REG_COMMANDS):
+                m.d.comb += mmio_read.eq(self.commands)
             with m.Default():
                 m.d.comb += mmio_read.eq(0)
+
+        # Reading the data register is what pops the mailbox. The pop must
+        # happen on the cycle the CPU actually samples ``mem_rdata``, which is
+        # the ``ready`` cycle, not the address cycle before it; popping early
+        # would hand back the next word instead of the one just read.
+        m.d.comb += self.mailbox_pop.eq(
+            ready & ~in_memory & ~self.mailbox_empty
+            & (offset == REG_RX_DATA))
 
         # The CPU holds mem_addr stable until it sees mem_ready, so a
         # combinational read mux still matches the address that was sampled.

@@ -113,5 +113,9 @@ def simulate(phase: int, board_name: str, *, vcd: str | None = None) -> None:
         from xsynth.sim.phase2 import run as run_phase2
 
         run_phase2(vcd=vcd)
+    elif phase == 3:
+        from xsynth.sim.phase3 import run as run_phase3
+
+        run_phase3(vcd=vcd)
     else:
         raise SystemExit(f"simulation for phase {phase} is not implemented yet")

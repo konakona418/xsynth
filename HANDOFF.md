@@ -1,13 +1,13 @@
 # Handoff / current state
 
-_Last updated: Phase 3a verified on hardware._
+_Last updated: Phase 3b verified on hardware._
 
 ## Where we are
 
-**Phases 0, 1, 2 and 3a are all done and verified on hardware.** The Tang Nano
-9K sends full HDMI (640x480@60 colour bars plus a 48 kHz wavetable voice), a
-host drives that voice live over the USB UART, and a PicoRV32 soft core runs
-programs the host uploads.
+**Phases 0, 1, 2, 3a and 3b are all done and verified on hardware.** The Tang
+Nano 9K sends full HDMI (640x480@60 colour bars plus a 48 kHz wavetable voice),
+a host drives that voice live over the USB UART, and a PicoRV32 soft core runs
+programs the host uploads — including the one that owns the command path.
 
 ```
 uv run xsynth sim   --phase 2                  # Amaranth simulation, no toolchain
@@ -15,10 +15,10 @@ uv run xsynth build --phase 3 --no-program     # synthesize + PnR + pack only
 uv run xsynth build --phase 3 --no-flash       # build + program SRAM (volatile)
 uv run xsynth host  status                     # talk to a programmed board
 uv run xsynth host  load                       # build, upload and run the firmware
-uv run pytest -q                               # 103 tests
+uv run pytest -q                               # 111 tests
 ```
 
-A phase 3 build takes about 5m45s; see the phase 3a section for why.
+A phase 3 build takes about 6 minutes; see the phase 3a section for why.
 
 The default build is 640x480, colour bars. Useful flags:
 `--pattern bars|cycle|<hex>`, `--video-mode 640x480|1280x720`, `--tone <hz>`
@@ -262,11 +262,60 @@ takes about **5m45s**. The CPU roughly doubles the LUT count and nextpnr's
 placer is superlinear in density, so a phase 3 build is several times a phase 2
 one — worth knowing before concluding that it has hung.
 
-### Next: Phase 3b
+### Phase 3b — the soft core owns the command path (done, verified on hardware)
 
-The CPU is in the SoC but not yet in the command path. Phase 3b adds PCPI, lets
-the firmware own voice allocation and sequencing, and routes the engine commands
-through it.
+The host's `note-on` now goes *through the CPU* rather than straight into the
+engine, and the acceptance gate is met: a full command FIFO stalls the core
+instead of losing a command.
+
+```bash
+uv run xsynth host --port /dev/ttyUSB1 load              # upload the 3b firmware
+uv run xsynth host --port /dev/ttyUSB1 status            # cpu_stat 0x5853594e ("XSYN")
+uv run xsynth host --port /dev/ttyUSB1 note-on --hz 440 --wave saw
+```
+
+Measured on the capture card: 440.1 Hz with partials 1/n (0.516, 0.336, 0.256,
+0.203, ...) — a sawtooth, so the whole chain ran.
+
+What was added:
+
+* `xsynth/hdl/pcpi.py` — `CommandCoProcessor`, the custom-0 instruction
+  `xsynth.push {rs2, rs1}` that writes a 64-bit command into the engine FIFO.
+  It asserts `pcpi_wait` while the FIFO is full and `pcpi_ready` otherwise, so
+  the CPU stalls rather than dropping. `funct3 = 1` reads the FIFO level back.
+* `xsynth/hdl/mailbox.py` — `FrameMailbox`, the byte path from the frame decoder
+  to the CPU. One packet type is forwarded; each frame is announced by a header
+  word (bit 15 set, type in bits 7:0, body length in bits 13:8) followed by the
+  body, one byte per 16-bit word.
+* `SoC` grew `REG_RX_DATA` (read pops, write flushes) and `REG_RX_STATUS`
+  (`{frames, overflow, empty}`), plus `REG_COMMANDS`, and passes PCPI through.
+* `xsynth/hdl/phase2.py` — `PacketHandler(forward_commands=...)`: in phase 3 the
+  handler length-checks a COMMANDS frame and then leaves it alone, because only
+  one thing may drive the FIFO.
+* `xsynth/sw/main.c` — the firmware unpacks each frame and pushes every command
+  through the co-processor. No overflow handling is needed: the stall is the
+  backpressure.
+* `xsynth/sim/phase3.py` and `tests/test_phase3.py` — the whole chain is
+  simulated end to end under iverilog: UART in, voice amplitude out.
+  `tests/test_pcpi.py` tests the stall directly on a deliberately tiny FIFO.
+
+Two bugs worth remembering, both in the SoC's read path (see gotchas): a
+register read must act on the `ready` cycle, not the address cycle, and a
+strobe register needs an explicit default or it latches on.
+
+Measured: **4833 LUT4 (55%), 2542 DFF (39%), 12/26 BSRAM** — the co-processor
+and mailbox cost about 330 LUTs and 100 flip-flops over phase 3a, and the build
+time is unchanged at roughly six minutes.
+
+`xsynth sim --phase 3` runs the whole chain under iverilog: it boots the
+firmware, plays a note through it, and stops it again.
+
+### Next: Phase 4
+
+Voice allocation and sequencing in firmware: several voices, a note-to-voice
+allocator, and sample-accurate scheduling using the command `delay` field. The
+hardware already supports four voices; the firmware is what will drive more
+than one.
 
 ## Gotchas learned the hard way
 
@@ -316,6 +365,27 @@ through it.
 * `amaranth.back.verilog` needs **`amaranth-yosys`**, not `yowasp-yosys`: it
   looks for a `yosys` binary or the builtin package, ignoring the `YOSYS`
   environment variable that the platform build uses. Both are dependencies now.
+* **A memory-mapped read has two cycles, and they are not interchangeable.**
+  `address_phase` is the cycle the address appears; the CPU samples `mem_rdata`
+  on the `ready` cycle after it. A register that *acts* on being read — popping
+  a FIFO, clearing a flag — must act on `ready`. Acting on `address_phase` pops
+  one entry early, so every read returns its neighbour, which looks like a
+  framing bug and is not one.
+* **A strobe register needs an explicit default.** `d += sig.eq(1)` inside a
+  `with m.If(...)` with no matching `d += sig.eq(0)` makes `sig` a register that
+  latches on forever. Put the default *before* the conditional block: in
+  Amaranth, a later assignment in the same domain wins.
+* In a Verilog testbench, `"a" + "b"` is **arithmetic on the string bits**, not
+  concatenation — `$display` prints a huge integer instead of the message. Use
+  one long string literal.
+* The frame decoder ignores incoming bytes while it drains a validated frame
+  (`DRAIN` lasts up to `MAX_PAYLOAD` cycles), so the UART byte period must be
+  longer than that in control-clock cycles. At 115200 baud and 27 MHz a byte is
+  234 cycles against a 32-cycle worst case, so there is margin; raising the baud
+  would need this checked.
+* An iverilog testbench's top module must be named exactly what
+  `verilog.convert(name=...)` used, or iverilog reports the design as an unknown
+  module type.
 * The firmware's C register header is **generated** from `xsynth.hdl.soc` at
   build time. Editing a `#define` by hand would be silently overwritten.
 * `ld.lld` relaxes `la` into `auipc`/`addi` pairs, which is why the disassembly

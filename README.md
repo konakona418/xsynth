@@ -19,7 +19,7 @@ USB UART, and a PicoRV32 soft core that runs programs the host uploads.
 | 1 | 48 kHz HDMI audio + 440 Hz test tone | built, verified on hardware |
 | 2 | UART -> command FIFO -> wavetable voice | built, verified on hardware |
 | 3a | PicoRV32 SoC + program upload | built, verified on hardware |
-| 3b | PCPI, firmware owns the command path | not started |
+| 3b | PCPI, firmware owns the command path | built, verified on hardware |
 | 4 | 8-voice wavetable engine | not started |
 | 5 | Sample-accurate sequencer | not started |
 | 6 | Xsynth ISA + LLVM fork | not started |
@@ -76,6 +76,14 @@ uv run xsynth host run --stop      # put the CPU back into reset
 register header is generated from the hardware's memory map, so the two cannot
 drift apart.
 
+From phase 3b the firmware is what owns the command path. The hardware still
+does the wire — UART, framing and CRC — and hands each validated frame to the
+core through a mailbox; the firmware parses it and pushes the commands into the
+engine FIFO with a custom instruction (`xsynth.push`, claimed through PCPI).
+Because that instruction stalls the CPU while the FIFO is full, a busy engine
+slows the sequencer down instead of losing notes. `host load` reports the
+firmware's identity through `cpu_stat`, which reads `0x5853594e` ("XSYN").
+
 The board's onboard debugger presents two USB serial interfaces: JTAG and the
 control UART. On Linux the UART is usually `/dev/ttyUSB1`; pass `--port` to
 choose explicitly, or let the client pick the only USB serial port.
@@ -121,6 +129,12 @@ Besides `COMMANDS`, `PING` and `STATUS`, phase 3 adds `LOAD` (a target address
 and a block of words, for uploading a program) and `RUN` (the CPU's run
 control). The status reply carries the CPU's flags, the firmware's scratch
 register and its free-running counter alongside the engine's own state.
+
+The soft core sees a flat 32-bit space: program and data memory at address 0,
+and registers at `0x1000_0000` — a status word, a free-running counter, a run
+control, the 48 kHz sample counter, the mailbox (`RX_DATA`, `RX_STATUS`) and the
+firmware's command count. The C header the firmware compiles against is
+generated from those constants.
 
 ## Layout
 

@@ -29,8 +29,10 @@ from xsynth.hdl.fifo import AsyncFifo
 from xsynth.hdl.framing import FrameDecoder, FrameTx
 from xsynth.hdl.hdmi import HDMIOutput
 from xsynth.hdl.loader import ProgramLoader
+from xsynth.hdl.mailbox import FrameMailbox
 from xsynth.hdl.phase0 import StatusLeds
 from xsynth.hdl.phase1 import AudioLeds
+from xsynth.hdl.pcpi import CommandCoProcessor
 from xsynth.hdl.uart import UartRx, UartTx, uart_timing
 from xsynth.hdl.video import make_pattern
 from xsynth.hdl.video_modes import DEFAULT_MODE, VideoMode
@@ -124,12 +126,18 @@ class PacketHandler(Elaboratable):
     Commands are packed from the little-endian command bytes into the 64-bit
     word the engine consumes; a command that arrives while the FIFO is full is
     dropped and reported rather than blocking the UART.
+
+    With ``forward_commands`` the command payload is not consumed here at all:
+    the frame is length-checked and then left to the soft core, which owns
+    voice allocation and reaches the engine through the co-processor. Only one
+    thing may drive the FIFO, so the two modes are exclusive.
     """
 
     def __init__(self, fifo, *, status_version: int = VERSION,
                  status_locked=0, status_fifo_level=0, status_samples=0,
                  status_cpu_flags=0, status_cpu_status=0,
-                 status_cpu_counter=0, domain: str = "sync"):
+                 status_cpu_counter=0, forward_commands: bool = False,
+                 domain: str = "sync"):
         self.fifo = fifo
         self.domain = domain
 
@@ -140,6 +148,7 @@ class PacketHandler(Elaboratable):
         self.status_cpu_flags = _as_value(status_cpu_flags)
         self.status_cpu_status = _as_value(status_cpu_status)
         self.status_cpu_counter = _as_value(status_cpu_counter)
+        self.forward_commands = forward_commands
 
         self.rx_byte = Signal(8)
         self.rx_stb = Signal()
@@ -235,7 +244,8 @@ class PacketHandler(Elaboratable):
         # Sticky error reporting; only OP_RESET clears it.
         d += crc_sticky.eq(crc_sticky | self.crc_error)
         d += length_sticky.eq(length_sticky | self.length_error)
-        d += fifo.w_inc.eq(0)
+        if not self.forward_commands:
+            d += fifo.w_inc.eq(0)
 
         with m.If(self.rx_stb):
             with m.If(self.rx_index == 0):
@@ -280,13 +290,14 @@ class PacketHandler(Elaboratable):
             with m.Elif(frame_state == STATE_COMMANDS):
                 d += accum.eq(Cat(accum[8:], self.rx_byte))
                 with m.If((self.rx_index % 8) == 0):
-                    d += fifo.w_data.eq(Cat(accum[8:], self.rx_byte))
-                    with m.If(fifo.w_full):
-                        d += overflow_sticky.eq(1)
-                        d += error_code.eq(ERR_FIFO_OVERFLOW)
-                        d += pending.eq(PENDING_ERROR)
-                    with m.Else():
-                        d += fifo.w_inc.eq(1)
+                    if not self.forward_commands:
+                        d += fifo.w_data.eq(Cat(accum[8:], self.rx_byte))
+                        with m.If(fifo.w_full):
+                            d += overflow_sticky.eq(1)
+                            d += error_code.eq(ERR_FIFO_OVERFLOW)
+                            d += pending.eq(PENDING_ERROR)
+                        with m.Else():
+                            d += fifo.w_inc.eq(1)
                     with m.If(self.rx_byte == OP_RESET):
                         d += crc_sticky.eq(0)
                         d += length_sticky.eq(0)
@@ -368,6 +379,7 @@ class Phase2Core(Elaboratable):
             status_locked=self.locked,
             status_fifo_level=fifo.w_level,
             status_samples=counter.synced,
+            forward_commands=self.soc is not None,
             **cpu_status,
         )
         m.d.comb += [
@@ -399,6 +411,35 @@ class Phase2Core(Elaboratable):
                 self.soc.load_data.eq(loader.data),
                 self.soc.run.eq(loader.run),
                 self.soc.samples.eq(counter.synced),
+            ]
+
+            m.submodules.mailbox = mailbox = FrameMailbox(
+                forward_type=PKT_COMMANDS)
+            m.d.comb += [
+                mailbox.rx_byte.eq(decoder.out_byte),
+                mailbox.rx_stb.eq(decoder.out_stb),
+                mailbox.rx_index.eq(decoder.out_index),
+                mailbox.rx_length.eq(decoder.out_length),
+                self.soc.mailbox_data.eq(mailbox.r_data),
+                self.soc.mailbox_empty.eq(mailbox.r_empty),
+                self.soc.mailbox_overflow.eq(mailbox.overflow),
+                self.soc.mailbox_frames.eq(mailbox.frames),
+                self.soc.mailbox_pushed.eq(mailbox.pushed),
+                self.soc.mailbox_popped.eq(mailbox.popped),
+                mailbox.r_inc.eq(self.soc.mailbox_pop),
+                mailbox.flush.eq(self.soc.mailbox_flush),
+            ]
+
+            m.submodules.coprocessor = coprocessor = CommandCoProcessor(fifo)
+            m.d.comb += [
+                coprocessor.valid.eq(self.soc.pcpi_valid),
+                coprocessor.insn.eq(self.soc.pcpi_insn),
+                coprocessor.rs1.eq(self.soc.pcpi_rs1),
+                coprocessor.rs2.eq(self.soc.pcpi_rs2),
+                self.soc.pcpi_wr.eq(coprocessor.wr),
+                self.soc.pcpi_rd.eq(coprocessor.rd),
+                self.soc.pcpi_wait.eq(coprocessor.wait),
+                self.soc.pcpi_ready.eq(coprocessor.ready),
             ]
 
         m.submodules.scheduler = scheduler = CommandScheduler(fifo)
