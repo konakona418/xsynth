@@ -24,11 +24,12 @@ uploads — including the one that owns the command path.
 | 4a | 8-voice engine, ADSR, saturating mix | built, verified on hardware |
 | 4b | Firmware voice allocation + sequencing | built, verified on hardware |
 | 5 | Sample-accurate sequencer | closed by 4b |
-| 6 | Xsynth ISA + LLVM fork | not started |
+| 6 | Custom LLVM toolchain | dropped by decision, see PLAN |
 
 Phase 4 was planned with a filter; it was dropped in favour of band-limited
-wavetables, which fix the aliasing at its source rather than after it. PLAN.md
-records the reasoning. Phase 5's other two work items — a monotonic sample
+wavetables, which fix the aliasing at its source rather than after it — that work
+is deferred and not scheduled against any phase. PLAN.md records the reasoning.
+Phase 5's other two work items — a monotonic sample
 counter and applying an event on its target sample — were finished as a side
 effect of Phase 2, so absolute timestamps in 4b were all that was left.
 

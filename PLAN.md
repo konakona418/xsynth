@@ -6,10 +6,10 @@ Xsynth 是面向 Tang Nano 9K、后续可移植到 Tang Nano 20K 的软硬件协
 
 - 主机通过 USB-UART 上传程序、发送实时事件并读取状态。
 - PicoRV32 负责协议解析、voice allocation、参数管理和 sequencing。
-- 独立 synth engine 负责 oscillator、wavetable、ADSR、mixer、filter 和后续 effects。
+- 独立 synth engine 负责 oscillator、wavetable、ADSR、mixer，以及后续的 effects。
 - CPU 不参与逐 sample DSP；所有实时音频计算由 FPGA 数据平面完成。
 - 初期输出为 48 kHz、16-bit stereo HDMI audio，后续可增加 I2S 等 transport。
-- 最终提供 `C/C++ intrinsic -> LLVM IR -> Xsynth custom instruction -> PicoRV32 PCPI -> synth command` 的完整纵向链路。
+- 控制平面是 PicoRV32 上的 C 固件；它经 PCPI 把命令推给 command FIFO，不需要自定义编译器。
 
 ## 2. 已确认的架构决策
 
@@ -28,7 +28,7 @@ Xsynth 是面向 Tang Nano 9K、后续可移植到 Tang Nano 20K 的软硬件协
 | 控制域 | UART、PicoRV32 运行在板载 27 MHz 时钟域 |
 | 控制/数据接口 | 27 MHz 控制域到 25.2 MHz音频域的异步 command FIFO |
 | UART 成帧分工 | 成帧与 CRC 留在硬件（Phase 2 已验证）；固件只负责 payload 语义（loader、voice allocation、sequencing），经 PCPI 写 command FIFO |
-| RISC-V 核心 | PicoRV32，未来通过 PCPI 接入 Xsynth custom instruction |
+| RISC-V 核心 | PicoRV32，经 PCPI 向 command FIFO 推命令 |
 | 程序执行 | 主机上传 RV32 机器码到 BRAM，由 PicoRV32 直接执行，不增加解释器 |
 | 事件时序 | 命令携带样本时间戳，synth engine 按 sample counter 精确触发 |
 | 内部数值格式 | 16-bit 样本、24-bit 数据通路、32-bit 累加器，最终饱和/舍入到 16-bit stereo |
@@ -39,7 +39,7 @@ Xsynth 是面向 Tang Nano 9K、后续可移植到 Tang Nano 20K 的软硬件协
 | Host 工具 | Python CLI，使用和 Amaranth 相同的 `uv` 环境 |
 | 验证策略 | Amaranth Python Simulator 为主，复用 `hdl-util/hdmi` 自带 Verilator 测试，上板做阶段验收 |
 | 仓库名称 | Python 项目名由 `rv32i-soft` 改为 `xsynth` |
-| Compiler 路线 | 维护 Xsynth LLVM fork，在 fork 中实现 intrinsic、IR lowering 和 RISC-V custom instruction backend 支持 |
+| Compiler 路线 | **不做**。PCPI 通道只有 `push`/`level` 两条指令，固件用 inline asm 就够；fork 一个 LLVM 的持续 rebase 成本远超「把 inline asm 换成 intrinsic」的收益。见 Phase 6 |
 
 ## 3. 时钟域与数据流
 
@@ -93,7 +93,7 @@ UART 是统一的二进制控制通道，支持三类操作：
 
 1. Loader：写入 BRAM、设置入口地址、运行、停止和 CPU reset。
 2. 控制与状态：读取 FIFO 水位、错误标志、版本及运行状态。
-3. 实时事件：`NOTE_ON`、`NOTE_OFF`、`SET_FREQ`、`SET_WAVE`、`SET_ENV`、`SET_FILTER` 等。
+3. 实时事件：`NOTE_ON`、`NOTE_OFF`、`SET_FREQ`、`SET_WAVE`、`SET_ENV` 等。
 
 Phase 2 只实现实时事件到 command FIFO 的路径。Phase 3 增加 loader 和 PicoRV32。实时演奏可以直接发送事件；离线 sequence 或复杂自动化可以上传程序执行。
 
@@ -458,8 +458,9 @@ note-off；`xsynth sim --phase 2` 打印三音和弦与包络。
    在哪、也不知道 naive 表会混叠。它是 checkbox，不是需求。
 
 所以 Phase 4b 改为：**固件的 note-to-voice 分配器与 sample-accurate
-sequencing**。band-limited wavetable 推迟到 Phase 6 之后——那时有硬件乘法器
-可用（Xsynth ISA / LLVM fork），正好是它该在的位置。
+sequencing**。band-limited wavetable 推迟，且不再挂靠任何阶段：mipmap 要的是给
+每个 mip level 多留 BSRAM，不是硬件乘法器，原先「等 Phase 6 的乘法器」那个理由
+不成立。它是目前唯一一件被明确推迟、尚未排入阶段的事。
 
 固件目前只做一对一转发，不做任何决策。
 
@@ -533,32 +534,29 @@ sequencing**。band-limited wavetable 推迟到 Phase 6 之后——那时有硬
 - 长时间 sequence 不出现可测量漂移。
 - late event 和 queue overflow 行为可观察且可测试。
 
-### Phase 6：Xsynth ISA 与 LLVM fork
+### Phase 6：已决定不做
 
-在 FPGA SoC 和 synth engine 稳定后开始 compiler 工作，不允许该阶段反向阻塞前五阶段。
+原计划是在 PCPI 里实现一套正式的 Xsynth 指令集，并维护一个 LLVM fork，提供
+`C/C++ intrinsic -> LLVM IR -> custom instruction -> PCPI -> command FIFO ->
+synth engine` 的完整纵向链路。
 
-工作项：
+做完 Phase 4b 后决定**不做**，理由：
 
-- 冻结 Xsynth custom opcode、operand、返回值、FIFO 满时的 stall/error 行为和 memory ordering 语义。
-- 在 PicoRV32 PCPI decoder 中实现正式 Xsynth 指令集。
-- 创建并维护 Xsynth LLVM fork。
-- 在 LLVM fork 中定义 intrinsic、TableGen instruction、feature/extension flag、instruction selection/lowering、assembler/disassembler 和 MC tests。
-- 提供 C/C++ intrinsic header，生成 Xsynth custom instruction。
-- 增加 compiler regression tests 和 FPGA 端端到端测试。
+1. **通道已经在那儿了，而且只有两条指令。** `xsynth.push` 和 `xsynth.level` 在
+   Phase 3b 就实现、文档化并测试过（`tests/test_pcpi.py` 覆盖了 FIFO 满时的
+   stall），固件的每一次 `emit()` 都走 `push`。
+2. **指令买不到新东西。** 命令字的打包在 `control.c` 里是四个一行函数；CPU 在
+   27 MHz、引擎在 48 kHz，每 sample 有 562 个周期，吞吐从来不是瓶颈。把决策搬进
+   指令——让硬件打包、让硬件排队——恰恰违背 4b 的结论：**软核做决策才是这个项目
+   要说的事**。
+3. **LLVM fork 的全部收益是「把 inline asm 换成 intrinsic」。** 就这一条，代价是
+   长期 rebase 一个 LLVM。收益小于成本，不值得论证。
+4. **原来的验收门其实已经满足，只是没有编译器那一环。** 固件用 C 加两条 inline
+   asm 走通了 `push -> PCPI decode -> command FIFO -> scheduler -> engine` 的
+   每一步，并且上板验证过。
 
-验收门：
-
-```text
-C/C++ intrinsic
-  -> LLVM IR intrinsic
-  -> RISC-V Xsynth instruction
-  -> PicoRV32 PCPI decode
-  -> command FIFO
-  -> timestamp scheduler
-  -> synth engine
-```
-
-正式路线只维护 LLVM fork，不把 `.insn`、独立 assembler 或 inline raw encoding 作为公开编程接口。开发早期允许临时使用原始指令编码做硬件冒烟测试，但必须在 Phase 6 完成后移除或限制在测试代码中。
+所以 Phase 6 关闭，项目不再有 compiler 阶段。`xsynth/hdl/pcpi.py` 的 docstring
+是这套语义的正式记录。
 
 ## 7. 验证要求
 
@@ -600,11 +598,10 @@ C/C++ intrinsic
 4. HDMI sink 兼容性：至少在两种不同显示设备上测试；不在早期实现 EDID。
 5. 9K 资源不足：Phase 4 前持续记录综合结果，参数化降档，20K 作为后续目标。
 6. Async FIFO/时间戳回绕错误：在上 CPU 前完成随机仿真与边界测试。
-7. LLVM fork 维护成本：只在 ISA 语义和硬件接口稳定后启动，减少持续 rebase 的范围。
 
 ## 10. 非目标
 
-在相应阶段到来前，以下内容不进入主线：
+以下内容不进入主线：
 
 - HDMI hotplug/EDID；
 - Tang Nano 20K 平台支持；
