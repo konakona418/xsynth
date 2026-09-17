@@ -103,7 +103,7 @@ netlist, output-enable, clock routing and OSER10 placement all checked out.
 
 ## Capture card (works — with a workflow caveat)
 
-`/dev/video3` (MACROSILICON "C1-1 USB3 Video", UVC) **does work** with the
+`/dev/videoN` (MACROSILICON "C1-1 USB3 Video", UVC) **does work** with the
 Tang Nano 9K. Verified live: VLC shows the `cycle` pattern changing colour once
 per second.
 
@@ -114,16 +114,35 @@ a live stream again:
 1. re-plug the HDMI at the **capture-card end** (the FPGA end is fine), and
 2. (re)start the viewer.
 
+**Then wait about six seconds before believing a capture.** After a re-plug the
+card serves that same stale frame for the first several seconds and only then
+starts delivering live ones — with no error and no change in the image
+metadata. A capture that grabs a single frame, or three frames in a burst,
+lands entirely inside that window and looks exactly like a dead link. Take one
+frame per second for ~14 seconds and check that the last ones have different
+md5s; a stale frame repeats one md5 forever, a live picture never repeats.
+
+A re-plug also **renumbers the device node** — it has been `/dev/video2`,
+`/dev/video3` and `/dev/video4` across sessions. Always re-check with
+`v4l2-ctl --list-devices` rather than trusting the last known number.
+
+A stuck capture (an old viewer holding the device, e.g. a VLC left over from a
+previous session) produces the same stale-frame symptom. Check
+`pgrep -a -f vlc` and kill by PID.
+
 ```bash
-vlc v4l2:///dev/video3 :v4l2-width=640 :v4l2-height=480 :v4l2-fps=60 :v4l2-chroma=YUYV
+vlc v4l2:///dev/video2 :v4l2-width=640 :v4l2-height=480 :v4l2-fps=60 :v4l2-chroma=YUYV
 ```
 
 For scripted screenshots:
 
 ```bash
 ffmpeg -f v4l2 -input_format mjpeg -video_size 640x480 -framerate 60 \
-       -i /dev/video3 -t 3 -frames:v 1 -update 1 -y out.png
+       -i /dev/video2 -t 14 -vf fps=1 -frames:v 14 -y warm%02d.png
 ```
+
+The last frames are the real ones; the colour bars should read white, yellow,
+cyan, green, magenta, red, blue, black across the row.
 
 ### Capturing the HDMI audio
 
