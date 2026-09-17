@@ -9,16 +9,17 @@ the phase-by-phase plan.
 
 ## Status
 
-Phases 0, 1 and 2 are implemented and verified on hardware: full HDMI video
-(640x480@60), a 48 kHz / 16-bit stereo voice, and live control of that voice
-over the USB UART.
+Phases 0, 1, 2 and 3a are implemented and verified on hardware: full HDMI video
+(640x480@60), a 48 kHz / 16-bit stereo voice, live control of that voice over the
+USB UART, and a PicoRV32 soft core that runs programs the host uploads.
 
 | Phase | Deliverable | State |
 | --- | --- | --- |
 | 0 | 640x480@60 video, PLL bring-up | built, verified on hardware |
 | 1 | 48 kHz HDMI audio + 440 Hz test tone | built, verified on hardware |
 | 2 | UART -> command FIFO -> wavetable voice | built, verified on hardware |
-| 3 | PicoRV32 + PCPI | not started |
+| 3a | PicoRV32 SoC + program upload | built, verified on hardware |
+| 3b | PCPI, firmware owns the command path | not started |
 | 4 | 8-voice wavetable engine | not started |
 | 5 | Sample-accurate sequencer | not started |
 | 6 | Xsynth ISA + LLVM fork | not started |
@@ -62,6 +63,19 @@ uv run xsynth host note-on --hz 440 --wave saw
 uv run xsynth host note-off
 ```
 
+Phase 3 also runs a soft core. The firmware is built with clang (the LLVM
+`riscv32` target) and uploaded over the same UART:
+
+```bash
+uv run xsynth host load            # build the bundled firmware, upload, run
+uv run xsynth host load image.bin  # or upload a flat binary of your own
+uv run xsynth host run --stop      # put the CPU back into reset
+```
+
+`xsynth/sw/` holds the firmware sources; `xsynth/firmware.py` builds them. The C
+register header is generated from the hardware's memory map, so the two cannot
+drift apart.
+
 The board's onboard debugger presents two USB serial interfaces: JTAG and the
 control UART. On Linux the UART is usually `/dev/ttyUSB1`; pass `--port` to
 choose explicitly, or let the client pick the only USB serial port.
@@ -72,12 +86,13 @@ To check what the HDMI sink actually received, record it and measure it:
 uv run xsynth analyse tone.wav
 ```
 
-Phase 1 accepts `--tone <hz>` (default 440); phase 2 accepts `--baud <rate>`
-(default 115200). Both accept `--pattern bars|cycle|<hex>` and
+Phase 1 accepts `--tone <hz>` (default 440); phases 2 and 3 accept `--baud
+<rate>` (default 115200). All accept `--pattern bars|cycle|<hex>` and
 `--video-mode 640x480|1280x720`.
 
 Build artifacts land in `build/`. `build/top.tim` is the nextpnr timing and
-utilisation report.
+utilisation report. A phase 3 build takes roughly six minutes: the CPU doubles
+the LUT count and nextpnr's placer is superlinear in density.
 
 ## The control protocol
 
@@ -102,19 +117,26 @@ send a whole sequence in one burst. The frame decoder validates the checksum
 before anything reaches the FIFO, so a corrupted frame cannot disturb a later
 one.
 
+Besides `COMMANDS`, `PING` and `STATUS`, phase 3 adds `LOAD` (a target address
+and a block of words, for uploading a program) and `RUN` (the CPU's run
+control). The status reply carries the CPU's flags, the firmware's scratch
+register and its free-running counter alongside the engine's own state.
+
 ## Layout
 
 ```
 xsynth/
   cli.py           command line entry point
   design.py        phase composition, build/simulate drivers
+  firmware.py      builds the RISC-V firmware with clang/ld.lld
   protocol.py      the control protocol, shared with the host tools
   hdl/             Amaranth RTL
   host/            serial client for the control protocol
   platform/        board definitions, Gowin primitives, toolchain patches
-  sim/             Amaranth simulation benches
+  sim/             simulation benches (Amaranth, and iverilog for the CPU)
   sv/              Xsynth-authored SystemVerilog glue
-  third_party/     vendored HDL (hdl-util/hdmi)
+  sw/              RISC-V firmware sources
+  third_party/     vendored HDL (hdl-util/hdmi, YosysHQ/picorv32)
 tests/             pytest suite
 ```
 

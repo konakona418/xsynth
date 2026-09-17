@@ -37,6 +37,8 @@ COMMAND_BYTES = 8
 PKT_COMMANDS = 0x01
 PKT_PING = 0x02
 PKT_STATUS = 0x03
+PKT_LOAD = 0x04
+PKT_RUN = 0x05
 
 PKT_PONG = 0x81
 PKT_STATUS_REPLY = 0x82
@@ -84,7 +86,28 @@ FLAG_BAD_COMMAND = 3
 FLAG_UNKNOWN_PACKET = 4
 FLAG_LOCKED = 5
 
-VERSION = 2
+# Bit positions in the CPU flags byte of a status reply.
+CPU_RUNNING = 0
+CPU_HALTED = 1
+CPU_TRAP = 2
+
+VERSION = 3
+
+# A status reply is fixed width. Offsets are into the reply's arguments, that
+# is, the payload without its leading packet-type byte.
+STATUS_ARGUMENTS = 16
+STATUS_CPU_FLAGS = 3
+STATUS_SAMPLES = 4
+STATUS_CPU_STATUS = 8
+STATUS_CPU_COUNTER = 12
+
+# The whole payload, packet type included.
+STATUS_BYTES = STATUS_ARGUMENTS + 1
+
+# A load packet is the packet type, a little-endian target address and a
+# little-endian word count, followed by that many little-endian words.
+LOAD_HEADER = 7
+MAX_LOAD_WORDS = (MAX_PAYLOAD - LOAD_HEADER) // 4
 
 VALUE_BITS = 32
 DELAY_BITS = 16
@@ -151,6 +174,44 @@ def encode_commands(commands) -> bytes:
     for command in commands:
         payload += command.pack()
     return encode_frame(payload)
+
+
+def encode_load(address: int, words) -> bytes:
+    """Wrap words for the loader, to be written into memory at ``address``.
+
+    A packet carries at most :data:`MAX_LOAD_WORDS` words, so an image goes out
+    as several of them.
+    """
+    if not 0 <= address <= 0xFFFF_FFFF:
+        raise ValueError(f"address {address:#x} does not fit in 32 bits")
+    words = list(words)
+    if len(words) > MAX_LOAD_WORDS:
+        raise ValueError(
+            f"a load packet carries at most {MAX_LOAD_WORDS} words, got "
+            f"{len(words)}"
+        )
+    payload = bytearray([PKT_LOAD])
+    payload += address.to_bytes(4, "little")
+    payload += len(words).to_bytes(2, "little")
+    for word in words:
+        payload += (word & 0xFFFF_FFFF).to_bytes(4, "little")
+    return encode_frame(payload)
+
+
+def encode_run(run: bool = True) -> bytes:
+    """Let the CPU out of reset, or put it back in."""
+    return encode_frame(bytes([PKT_RUN, 1 if run else 0]))
+
+
+def load_packets(image: bytes, *, base: int = 0):
+    """Split a firmware image into the load packets that carry it."""
+    words = [
+        int.from_bytes(image[start:start + 4].ljust(4, b"\0"), "little")
+        for start in range(0, len(image), 4)
+    ]
+    for start in range(0, len(words), MAX_LOAD_WORDS):
+        yield encode_load(base + 4 * start,
+                          words[start:start + MAX_LOAD_WORDS])
 
 
 def decode_response(payload: bytes) -> tuple[int, bytes]:

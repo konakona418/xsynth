@@ -19,6 +19,7 @@ from xsynth.protocol import (
     PKT_PONG,
     PKT_STATUS,
     PKT_STATUS_REPLY,
+    STATUS_ARGUMENTS,
     Command,
     decode_response,
     encode_commands,
@@ -38,7 +39,7 @@ def test_status_reports_the_version_and_the_lock_bit():
     assert len(result.responses) == 1
     packet, arguments = decode_response(result.responses[0])
     assert packet == PKT_STATUS_REPLY
-    assert len(arguments) == 8
+    assert len(arguments) == STATUS_ARGUMENTS
     assert arguments[1] & (1 << FLAG_LOCKED)
     assert arguments[2] == 0  # the FIFO is drained
 

@@ -10,6 +10,7 @@ from xsynth.host.client import Status, XsynthClient
 from xsynth.hdl.audio import phase_step
 from xsynth.hdl.voice import WAVES
 from xsynth.protocol import (
+    CPU_RUNNING,
     FLAG_CRC_ERROR,
     FLAG_LOCKED,
     OP_NOTE_ON,
@@ -21,6 +22,8 @@ from xsynth.protocol import (
     Command,
     encode_commands,
     encode_frame,
+    encode_run,
+    load_packets,
 )
 
 
@@ -83,23 +86,32 @@ def test_ping_reads_a_pong():
 
 
 def test_status_is_decoded():
-    payload = bytes([PKT_STATUS_REPLY, 2, 1 << FLAG_LOCKED, 3, 0,
-                     0x11, 0x22, 0x33, 0x44])
+    payload = bytes([
+        PKT_STATUS_REPLY, 3, 1 << FLAG_LOCKED, 3, 1 << CPU_RUNNING,
+        0x11, 0x22, 0x33, 0x44,   # samples
+        0xAA, 0xBB, 0xCC, 0xDD,   # the firmware's scratch register
+        0x01, 0x02, 0x03, 0x04,   # the free-running counter
+    ])
     fake = _FakeSerial(encode_frame(payload))
     client = XsynthClient(transport=fake)
 
     status = client.status()
-    assert status.version == 2
+    assert status.version == 3
     assert status.locked
     assert status.fifo_level == 3
     assert status.samples == 0x44332211
+    assert status.cpu_status == 0xDDCCBBAA
+    assert status.cpu_counter == 0x04030201
+    assert status.running
+    assert not status.halted
+    assert not status.trapped
     assert status.errors == []
     assert bytes(fake.written) == encode_frame(bytes([PKT_STATUS]))
 
 
 def test_status_reports_sticky_errors():
-    status = Status(version=2, flags=1 << FLAG_CRC_ERROR, fifo_level=0,
-                    samples=0)
+    status = Status(version=3, flags=1 << FLAG_CRC_ERROR, fifo_level=0,
+                    cpu_flags=0, samples=0, cpu_status=0, cpu_counter=0)
     assert status.errors == ["crc_error"]
     assert not status.locked
 
@@ -122,3 +134,32 @@ def test_an_unknown_waveform_is_rejected():
     client = XsynthClient(transport=_FakeSerial())
     with pytest.raises(SystemExit):
         client.set_wave("noise")
+
+
+def test_load_sends_one_frame_per_packet():
+    fake = _FakeSerial()
+    client = XsynthClient(transport=fake)
+
+    image = bytes(range(32))  # eight words, so two packets
+    assert client.load(image) == len(image)
+
+    assert bytes(fake.written) == b"".join(load_packets(image))
+
+
+def test_run_and_stop_send_the_run_packet():
+    fake = _FakeSerial()
+    client = XsynthClient(transport=fake)
+
+    client.run(True)
+    client.run(False)
+
+    assert bytes(fake.written) == encode_run(True) + encode_run(False)
+
+
+def test_a_load_image_is_rounded_up_to_whole_words():
+    fake = _FakeSerial()
+    client = XsynthClient(transport=fake)
+
+    client.load(b"\x01\x02\x03")  # not a whole number of words
+
+    assert bytes(fake.written) == b"".join(load_packets(b"\x01\x02\x03"))

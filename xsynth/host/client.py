@@ -23,6 +23,9 @@ from serial.tools import list_ports
 
 from xsynth.hdl.audio import DEFAULT_TONE_HZ, phase_step
 from xsynth.protocol import (
+    CPU_HALTED,
+    CPU_RUNNING,
+    CPU_TRAP,
     FLAG_BAD_COMMAND,
     FLAG_CRC_ERROR,
     FLAG_LENGTH_ERROR,
@@ -40,10 +43,17 @@ from xsynth.protocol import (
     PKT_PONG,
     PKT_STATUS,
     PKT_STATUS_REPLY,
+    STATUS_ARGUMENTS,
+    STATUS_CPU_COUNTER,
+    STATUS_CPU_FLAGS,
+    STATUS_CPU_STATUS,
+    STATUS_SAMPLES,
     Command,
     FrameDecoder,
     decode_response,
     encode_frame,
+    encode_run,
+    load_packets,
 )
 
 SAMPLE_RATE = 48_000
@@ -82,22 +92,33 @@ class Status:
     version: int
     flags: int
     fifo_level: int
+    cpu_flags: int
     samples: int
+    cpu_status: int
+    cpu_counter: int
 
     @classmethod
     def parse(cls, payload: bytes) -> Status:
         packet, arguments = decode_response(payload)
         if packet != PKT_STATUS_REPLY:
             raise ValueError(f"expected a status reply, got packet {packet:#04x}")
-        if len(arguments) != 8:
+        if len(arguments) != STATUS_ARGUMENTS:
             raise ValueError(
-                f"a status reply carries 8 arguments, got {len(arguments)}"
+                f"a status reply carries {STATUS_ARGUMENTS} arguments, got "
+                f"{len(arguments)}"
             )
+
+        def word(offset: int) -> int:
+            return int.from_bytes(arguments[offset:offset + 4], "little")
+
         return cls(
             version=arguments[0],
             flags=arguments[1],
             fifo_level=arguments[2],
-            samples=int.from_bytes(arguments[4:8], "little"),
+            cpu_flags=arguments[STATUS_CPU_FLAGS],
+            samples=word(STATUS_SAMPLES),
+            cpu_status=word(STATUS_CPU_STATUS),
+            cpu_counter=word(STATUS_CPU_COUNTER),
         )
 
     @property
@@ -107,6 +128,18 @@ class Status:
     @property
     def errors(self) -> list[str]:
         return [name for bit, name in _FLAG_NAMES if self.flags & (1 << bit)]
+
+    @property
+    def running(self) -> bool:
+        return bool(self.cpu_flags & (1 << CPU_RUNNING))
+
+    @property
+    def halted(self) -> bool:
+        return bool(self.cpu_flags & (1 << CPU_HALTED))
+
+    @property
+    def trapped(self) -> bool:
+        return bool(self.cpu_flags & (1 << CPU_TRAP))
 
 
 class XsynthClient:
@@ -137,9 +170,13 @@ class XsynthClient:
     def flush_input(self) -> None:
         self.serial.reset_input_buffer()
 
-    def send(self, payload: bytes) -> None:
-        self.serial.write(encode_frame(payload))
+    def send_frame(self, frame: bytes) -> None:
+        """Send an already-framed packet."""
+        self.serial.write(frame)
         self.serial.flush()
+
+    def send(self, payload: bytes) -> None:
+        self.send_frame(encode_frame(payload))
 
     def send_commands(self, commands) -> None:
         payload = bytearray([0x01])
@@ -212,6 +249,21 @@ class XsynthClient:
 
     def reset(self, *, delay: int = 0) -> None:
         self.send_commands([Command(OP_RESET, delay=delay)])
+
+    def load(self, image: bytes, *, base: int = 0) -> int:
+        """Write a firmware image into program memory.
+
+        Returns the number of bytes written. The CPU must be stopped, or at
+        least not depending on the words being replaced: the loader wins the
+        memory port, but a running program will still fetch whatever is there.
+        """
+        for frame in load_packets(image, base=base):
+            self.send_frame(frame)
+        return len(image)
+
+    def run(self, running: bool = True) -> None:
+        """Let the CPU out of reset, or put it back in."""
+        self.send_frame(encode_run(running))
 
     @staticmethod
     def step_for(hz: float) -> int:

@@ -1,28 +1,33 @@
 # Handoff / current state
 
-_Last updated: Phase 2 verified on hardware._
+_Last updated: Phase 3a verified on hardware._
 
 ## Where we are
 
-**Phases 0, 1 and 2 are all done and verified on hardware.** The Tang Nano 9K
-sends full HDMI (640x480@60 colour bars plus a 48 kHz wavetable voice) and a
-host drives that voice live over the USB UART.
+**Phases 0, 1, 2 and 3a are all done and verified on hardware.** The Tang Nano
+9K sends full HDMI (640x480@60 colour bars plus a 48 kHz wavetable voice), a
+host drives that voice live over the USB UART, and a PicoRV32 soft core runs
+programs the host uploads.
 
 ```
 uv run xsynth sim   --phase 2                  # Amaranth simulation, no toolchain
-uv run xsynth build --phase 2 --no-program     # synthesize + PnR + pack only
-uv run xsynth build --phase 2 --no-flash       # build + program SRAM (volatile)
+uv run xsynth build --phase 3 --no-program     # synthesize + PnR + pack only
+uv run xsynth build --phase 3 --no-flash       # build + program SRAM (volatile)
 uv run xsynth host  status                     # talk to a programmed board
-uv run pytest -q                               # 78 tests
+uv run xsynth host  load                       # build, upload and run the firmware
+uv run pytest -q                               # 103 tests
 ```
+
+A phase 3 build takes about 5m45s; see the phase 3a section for why.
 
 The default build is 640x480, colour bars. Useful flags:
 `--pattern bars|cycle|<hex>`, `--video-mode 640x480|1280x720`, `--tone <hz>`
 (phase 1), `--baud <rate>` (phase 2), `--hdmi` (force full HDMI; phase 0 defaults
 to DVI, phase 1+ to HDMI).
 
-Host actions: `ping`, `status`, `reset`, `note-on [--hz|--note] [--wave]`,
-`note-off`, `freq <hz>`, `wave <name>`, `amp <0..1>`.
+Host actions: `ping`, `status`, `reset`, `load [image] [--no-run]`,
+`run [--stop]`, `note-on [--hz|--note] [--wave]`, `note-off`, `freq <hz>`,
+`wave <name>`, `amp <0..1>`.
 
 ### The control UART is /dev/ttyUSB1
 
@@ -222,12 +227,46 @@ Resource use: **2248 LUT4 (26%)**, 616 ALU, 1387 DFF (21%), **8 BSRAM (30%)**
 `clk_audio` also pass. The 27 MHz control clock needed its own `create_clock`;
 without it nextpnr reported it against the 12 MHz default.
 
-## Next: Phase 3 — PicoRV32 and program upload
+## Phase 3a — PicoRV32 and program upload (done, verified on hardware)
 
-1. Vendor PicoRV32, add program/data BRAM, UART and timer.
-2. Firmware takes over the frame parsing the hardware decoder does today.
-3. Extend the protocol with memory write, entry point, RUN/STOP/RESET.
-4. PCPI custom opcode -> the same 64-bit command word.
+The CPU is real and runs code uploaded over the wire:
+
+```bash
+uv run xsynth host --port /dev/ttyUSB1 load      # build, upload and run
+uv run xsynth host --port /dev/ttyUSB1 status    # cpu running, cpu_stat 0x12345678
+uv run xsynth host --port /dev/ttyUSB1 run --stop
+```
+
+What was added:
+
+* `xsynth/third_party/picorv32/` — the vendored core, read by Yosys's ordinary
+  `read_verilog` (plain Verilog, so no patch machinery is needed).
+* `xsynth/hdl/soc.py` — `PicoRV32` (an Amaranth black box) and `SoC`: 8 KB of
+  program/data BSRAM at address 0, memory-mapped registers at `0x1000_0000`.
+  The loader and the CPU share one write port; the loader wins and stalls the
+  CPU, so a mistimed load cannot silently corrupt a running program.
+* `xsynth/hdl/loader.py` — `ProgramLoader`, which turns validated LOAD frames
+  into memory writes and latches the run control.
+* `xsynth/sw/` plus `xsynth/firmware.py` — startup, linker script and a minimal
+  firmware, compiled by clang/`ld.lld` into a flat image. The C register header
+  is generated from `xsynth.hdl.soc`, so the two cannot drift apart.
+* Protocol: `PKT_LOAD` and `PKT_RUN`, and a 17-byte status reply carrying the
+  CPU flags, the firmware's scratch register and the free-running counter.
+  `VERSION` is now 3.
+* `xsynth/sim/verilog.py` and `xsynth/sim/soc.py` — Amaranth cannot simulate a
+  Verilog `Instance`, so designs containing one are emitted to Verilog and run
+  under iverilog. `tests/test_soc.py` boots the real firmware on the real core.
+
+Measured: **4504 LUT4 (52%), 2443 DFF (37%), 12/26 BSRAM**, and a full build
+takes about **5m45s**. The CPU roughly doubles the LUT count and nextpnr's
+placer is superlinear in density, so a phase 3 build is several times a phase 2
+one — worth knowing before concluding that it has hung.
+
+### Next: Phase 3b
+
+The CPU is in the SoC but not yet in the command path. Phase 3b adds PCPI, lets
+the firmware own voice allocation and sequencing, and routes the engine commands
+through it.
 
 ## Gotchas learned the hard way
 
@@ -270,3 +309,17 @@ without it nextpnr reported it against the 12 MHz default.
   like we do), `zf3/some-tang-nano-9k-examples` (`01.hdmi`, SVO core),
   `joachimdraeger/vic64-t9k`. All are built with the Gowin IDE; ours is the
   Apicula/nextpnr equivalent.
+* **Amaranth's simulator cannot run a Verilog `Instance`.** Anything containing
+  one (PicoRV32, the HDMI core) has to be emitted to Verilog and simulated
+  externally — `xsynth/sim/verilog.py` drives iverilog. The exception is why
+  `Phase2Core` exists: keeping the core free of black boxes lets pysim test it.
+* `amaranth.back.verilog` needs **`amaranth-yosys`**, not `yowasp-yosys`: it
+  looks for a `yosys` binary or the builtin package, ignoring the `YOSYS`
+  environment variable that the platform build uses. Both are dependencies now.
+* The firmware's C register header is **generated** from `xsynth.hdl.soc` at
+  build time. Editing a `#define` by hand would be silently overwritten.
+* `ld.lld` relaxes `la` into `auipc`/`addi` pairs, which is why the disassembly
+  of `_start` does not look like the assembly source.
+* The CPU costs roughly 2300 LUTs and the program memory 4 BSRAM, which takes a
+  phase 3 build from ~2 minutes to ~5m45s. nextpnr's placer is superlinear in
+  density; a long build is not necessarily a hung one.

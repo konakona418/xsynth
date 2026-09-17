@@ -66,6 +66,16 @@ def design_for_phase(phase: int, *, mode_name: str = DEFAULT_MODE.name,
             pattern=pattern,
             baud=baud if baud is not None else DEFAULT_BAUD,
         )
+    if phase == 3:
+        from xsynth.hdl.phase2 import DEFAULT_BAUD
+        from xsynth.hdl.phase3 import Phase3
+
+        return Phase3(
+            config["video_mode"],
+            audio_bits=config["audio_bits"],
+            pattern=pattern,
+            baud=baud if baud is not None else DEFAULT_BAUD,
+        )
     raise SystemExit(f"phase {phase} is not implemented yet")
 
 
@@ -77,6 +87,10 @@ def build(phase: int, board_name: str, *, program: bool = True,
           baud: int | None = None) -> None:
     platform = get_board(board_name)
     patch_all(program_to_flash=program_to_flash)
+    if phase >= 3:
+        from xsynth.hdl.soc import install_cpu_sources
+
+        install_cpu_sources(platform)
     install_hdmi_sources(
         platform, **hdmi_config_for_phase(phase, mode_name, dvi_output)
     )

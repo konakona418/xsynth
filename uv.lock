@@ -29,6 +29,17 @@ wheels = [
 ]
 
 [[package]]
+name = "amaranth-yosys"
+version = "0.50.0.0.post128"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "wasmtime" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a4/58/6793996a950e5018915d4bbc27967ffda488d423f388de2cf9c7d5e9dde9/amaranth_yosys-0.50.0.0.post128-py3-none-any.whl", hash = "sha256:4831a4d904ec873295f1f25965245b12f6da374afcb1efed8bbcf00dbaf855cf", size = 11064310, upload-time = "2026-08-21T01:39:15.666Z" },
+]
+
+[[package]]
 name = "apycula"
 version = "0.31"
 source = { registry = "https://pypi.org/simple" }
@@ -390,6 +401,7 @@ source = { editable = "." }
 dependencies = [
     { name = "amaranth" },
     { name = "amaranth-boards" },
+    { name = "amaranth-yosys" },
     { name = "apycula" },
     { name = "numpy" },
     { name = "pyserial" },
@@ -406,6 +418,7 @@ dev = [
 requires-dist = [
     { name = "amaranth", specifier = ">=0.5.8" },
     { name = "amaranth-boards", specifier = ">=0.0.9" },
+    { name = "amaranth-yosys", specifier = ">=0.50.0.0.post128" },
     { name = "apycula", specifier = ">=0.31" },
     { name = "numpy", specifier = ">=2.4.4" },
     { name = "pyserial", specifier = ">=3.5" },

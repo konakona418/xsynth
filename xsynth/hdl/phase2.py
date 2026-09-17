@@ -28,6 +28,7 @@ from xsynth.hdl.clock import ClockDomains, PowerOnReset, XsynthClocks
 from xsynth.hdl.fifo import AsyncFifo
 from xsynth.hdl.framing import FrameDecoder, FrameTx
 from xsynth.hdl.hdmi import HDMIOutput
+from xsynth.hdl.loader import ProgramLoader
 from xsynth.hdl.phase0 import StatusLeds
 from xsynth.hdl.phase1 import AudioLeds
 from xsynth.hdl.uart import UartRx, UartTx, uart_timing
@@ -42,10 +43,13 @@ from xsynth.protocol import (
     OP_RESET,
     PKT_COMMANDS,
     PKT_ERROR,
+    PKT_LOAD,
     PKT_PING,
     PKT_PONG,
+    PKT_RUN,
     PKT_STATUS,
     PKT_STATUS_REPLY,
+    STATUS_ARGUMENTS,
     VERSION,
 )
 
@@ -53,7 +57,7 @@ CONTROL_CLOCK_HZ = 27_000_000
 DEFAULT_BAUD = 115_200
 DEFAULT_FIFO_DEPTH = 16
 
-STATUS_BYTES = 9
+STATUS_BYTES = STATUS_ARGUMENTS + 1
 ERROR_BYTES = 3
 
 PENDING_NONE = 0
@@ -105,6 +109,15 @@ class SampleCounter(Elaboratable):
         return m
 
 
+def _as_value(value):
+    """Wrap a plain int so it can be sliced and concatenated like a signal.
+
+    The status reply is assembled from whatever the caller supplies, and a
+    caller with nothing to report naturally passes ``0``.
+    """
+    return Const(value) if isinstance(value, int) else value
+
+
 class PacketHandler(Elaboratable):
     """Turn validated frames into FIFO writes and UART responses.
 
@@ -115,14 +128,18 @@ class PacketHandler(Elaboratable):
 
     def __init__(self, fifo, *, status_version: int = VERSION,
                  status_locked=0, status_fifo_level=0, status_samples=0,
-                 domain: str = "sync"):
+                 status_cpu_flags=0, status_cpu_status=0,
+                 status_cpu_counter=0, domain: str = "sync"):
         self.fifo = fifo
         self.domain = domain
 
         self.status_version = status_version
         self.status_locked = status_locked
         self.status_fifo_level = status_fifo_level
-        self.status_samples = status_samples
+        self.status_samples = _as_value(status_samples)
+        self.status_cpu_flags = _as_value(status_cpu_flags)
+        self.status_cpu_status = _as_value(status_cpu_status)
+        self.status_cpu_counter = _as_value(status_cpu_counter)
 
         self.rx_byte = Signal(8)
         self.rx_stb = Signal()
@@ -172,11 +189,19 @@ class PacketHandler(Elaboratable):
             self.status_version,
             self.error_flags,
             self.status_fifo_level,
-            0,
+            self.status_cpu_flags,
             self.status_samples[0:8],
             self.status_samples[8:16],
             self.status_samples[16:24],
             self.status_samples[24:32],
+            self.status_cpu_status[0:8],
+            self.status_cpu_status[8:16],
+            self.status_cpu_status[16:24],
+            self.status_cpu_status[24:32],
+            self.status_cpu_counter[0:8],
+            self.status_cpu_counter[8:16],
+            self.status_cpu_counter[16:24],
+            self.status_cpu_counter[24:32],
         ])
 
         pending = Signal(2)
@@ -243,6 +268,10 @@ class PacketHandler(Elaboratable):
                             d += bad_command_sticky.eq(1)
                             d += error_code.eq(ERR_BAD_LENGTH)
                             d += pending.eq(PENDING_ERROR)
+                    with m.Case(PKT_LOAD, PKT_RUN):
+                        # The program loader consumes these; the handler only
+                        # has to not call them unknown.
+                        d += frame_state.eq(STATE_IGNORE)
                     with m.Default():
                         d += frame_state.eq(STATE_IGNORE)
                         d += unknown_sticky.eq(1)
@@ -273,10 +302,13 @@ class Phase2Core(Elaboratable):
 
     def __init__(self, *, baud: int = DEFAULT_BAUD,
                  fifo_depth: int = DEFAULT_FIFO_DEPTH,
-                 control_clock_hz: int = CONTROL_CLOCK_HZ):
+                 control_clock_hz: int = CONTROL_CLOCK_HZ, soc=None):
         self.baud = baud
         self.fifo_depth = fifo_depth
         self.control_clock_hz = control_clock_hz
+        # Phase 3 adds the soft core alongside the engine; with no SoC this is
+        # exactly the phase 2 design.
+        self.soc = soc
 
         self.rx = Signal(init=1)
         self.tx = Signal()
@@ -317,12 +349,26 @@ class Phase2Core(Elaboratable):
         m.submodules.counter = counter = SampleCounter()
         m.d.comb += counter.strobe.eq(self.audio_strobe)
 
+        cpu_status = {}
+        if self.soc is not None:
+            # The status byte the host reads: running, halted, trapped.
+            cpu_status = {
+                "status_cpu_flags": Cat(
+                    self.soc.run & ~self.soc.halted,
+                    self.soc.halted,
+                    self.soc.trap,
+                ),
+                "status_cpu_status": self.soc.status,
+                "status_cpu_counter": self.soc.counter,
+            }
+
         m.submodules.handler = handler = PacketHandler(
             fifo,
             status_version=VERSION,
             status_locked=self.locked,
             status_fifo_level=fifo.w_level,
             status_samples=counter.synced,
+            **cpu_status,
         )
         m.d.comb += [
             handler.rx_byte.eq(decoder.out_byte),
@@ -338,6 +384,22 @@ class Phase2Core(Elaboratable):
             self.fifo_level.eq(fifo.w_level),
             self.samples.eq(counter.synced),
         ]
+
+        if self.soc is not None:
+            m.submodules.soc = self.soc
+            m.submodules.loader = loader = ProgramLoader(
+                mem_words=self.soc.mem_words)
+            m.d.comb += [
+                loader.rx_byte.eq(decoder.out_byte),
+                loader.rx_stb.eq(decoder.out_stb),
+                loader.rx_index.eq(decoder.out_index),
+                loader.rx_length.eq(decoder.out_length),
+                self.soc.load_stb.eq(loader.stb),
+                self.soc.load_addr.eq(loader.addr),
+                self.soc.load_data.eq(loader.data),
+                self.soc.run.eq(loader.run),
+                self.soc.samples.eq(counter.synced),
+            ]
 
         m.submodules.scheduler = scheduler = CommandScheduler(fifo)
         m.d.comb += scheduler.strobe.eq(self.audio_strobe)
@@ -381,6 +443,10 @@ class Phase2(Elaboratable):
         self.baud = baud
         self.fifo_depth = fifo_depth
 
+    def make_core(self):
+        """The control and audio core; phase 3 overrides this to add the SoC."""
+        return Phase2Core(baud=self.baud, fifo_depth=self.fifo_depth)
+
     def elaborate(self, platform):
         m = Module()
         mode = self.mode
@@ -391,9 +457,7 @@ class Phase2(Elaboratable):
         m.submodules.reset = reset = PowerOnReset(clocks.locked)
 
         uart_pins = platform.request("uart", 0, dir={"rx": "i", "tx": "o"})
-        m.submodules.core = core = Phase2Core(
-            baud=self.baud, fifo_depth=self.fifo_depth,
-        )
+        m.submodules.core = core = self.make_core()
         m.d.comb += [
             core.rx.eq(uart_pins.rx.i),
             uart_pins.tx.o.eq(core.tx),

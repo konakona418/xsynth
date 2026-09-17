@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
@@ -65,6 +66,17 @@ def _add_host(parser: argparse.ArgumentParser) -> None:
     actions.add_parser("status", help="read the version, flags and FIFO level")
     actions.add_parser("reset", help="reset the voice and clear error flags")
 
+    run = actions.add_parser("run", help="let the CPU out of reset")
+    run.add_argument("--stop", action="store_true",
+                     help="put the CPU back into reset instead")
+
+    load = actions.add_parser("load", help="upload a program and run it")
+    load.add_argument("image", nargs="?", default=None,
+                      help="a flat binary image (default: build the bundled "
+                           "firmware)")
+    load.add_argument("--no-run", action="store_true",
+                      help="load without letting the CPU out of reset")
+
     note_on = actions.add_parser("note-on", help="start a note")
     note_on.add_argument("--hz", type=float, default=440.0)
     note_on.add_argument("--note", type=int, default=None,
@@ -92,6 +104,14 @@ def _note_to_hz(note: int) -> float:
     return 440.0 * 2 ** ((note - 69) / 12)
 
 
+def _describe_cpu(status) -> str:
+    if status.trapped:
+        return "trapped"
+    if status.halted:
+        return "halted"
+    return "running" if status.running else "stopped"
+
+
 def _run_host(args) -> int:
     from xsynth.host import XsynthClient
 
@@ -105,7 +125,27 @@ def _run_host(args) -> int:
             print(f"locked   {status.locked}")
             print(f"fifo     {status.fifo_level}")
             print(f"samples  {status.samples}")
+            print(f"cpu      {_describe_cpu(status)}")
+            print(f"cpu_stat {status.cpu_status:#010x}")
+            print(f"cpu_ctr  {status.cpu_counter}")
             print(f"errors   {', '.join(status.errors) or 'none'}")
+        elif args.action == "run":
+            client.run(not args.stop)
+            print("stopped" if args.stop else "running")
+        elif args.action == "load":
+            if args.image is None:
+                from xsynth.firmware import build_firmware
+
+                image = build_firmware()
+                print(f"built {len(image)} bytes of firmware")
+            else:
+                image = Path(args.image).read_bytes()
+            client.run(False)
+            client.load(image)
+            print(f"loaded {len(image)} bytes")
+            if not args.no_run:
+                client.run(True)
+                print("running")
         elif args.action == "reset":
             client.reset()
             print("reset sent")

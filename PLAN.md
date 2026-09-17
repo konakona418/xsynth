@@ -313,6 +313,8 @@ Phase 2 实际结果：
 
 ### Phase 3：PicoRV32 SoC 与程序上传
 
+拆成 3a（SoC 跑起来）和 3b（CPU 进入命令路径）。
+
 工作项：
 
 - Vendor PicoRV32 及许可证。
@@ -328,6 +330,30 @@ Phase 2 实际结果：
 - 主机可上传、启动和停止程序。
 - PicoRV32 程序可通过 command FIFO 控制 DDS。
 - PCPI backpressure 在 FIFO 满时行为明确，不静默丢失命令。
+
+#### Phase 3a 实际结果（已上板验证）
+
+- Memory map：`0x0000_0000` 起 8 KB program/data BSRAM；`0x1000_0000` 起为 MMIO
+  —— `+0x00` status、`+0x04` 自由计数器、`+0x08` control（写 bit0 停机）、
+  `+0x0C` 48 kHz 采样计数。
+- 复位向量固定为 0（`PROGADDR_RESET=0`），所以不需要 SET_ENTRY：loader 总是把
+  镜像写在 0，linker script 也把 `_start` 放在最前。
+- Loader 是硬件（引导阶段没有 CPU 可用）。它只认 `PKT_LOAD` / `PKT_RUN`，按
+  payload 的字节下标定位字段；CRC 已由硬件解码器验证过。越界的 load 被拒绝而
+  不是回绕。
+- 成帧与 CRC 仍在硬件，CPU 只做语义 —— 见 §2 决策表。
+- 协议 `VERSION` 升到 3：status reply 17 字节，增加 CPU flags、固件 scratch
+  寄存器和自由计数器。
+- 固件用 clang（`--target=riscv32-unknown-elf -march=rv32i`）+ `ld.lld` +
+  `llvm-objcopy` 构建；C 寄存器头由 `xsynth.hdl.soc` 生成，避免两边漂移。
+- 验证：`xsynth/sim/soc.py` 通过 iverilog 跑**真实 PicoRV32 + 真实固件**；
+  板上 `load` 后 `cpu_stat` 读到 `0x12345678`，`run --stop` / `run` 都生效。
+- 资源：4504 LUT4 (52%)、2443 DFF (37%)、12/26 BSRAM；整次构建约 5m45s
+  （CPU 让 LUT 翻倍，nextpnr 布局器对密度超线性）。
+
+#### Phase 3b 待做
+
+PCPI、firmware 接管 voice allocation 与 sequencing、命令改走 CPU。
 
 ### Phase 4：完整基础 synth engine
 
