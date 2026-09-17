@@ -21,8 +21,8 @@ uploads — including the one that owns the command path.
 | 2 | UART -> command FIFO -> wavetable voice | built, verified on hardware |
 | 3a | PicoRV32 SoC + program upload | built, verified on hardware |
 | 3b | PCPI, firmware owns the command path | built, verified on hardware |
-| 4a | 8-voice engine, ADSR, saturating mix | built and simulated |
-| 4b | Firmware voice allocation + sequencing | built and tested |
+| 4a | 8-voice engine, ADSR, saturating mix | built, verified on hardware |
+| 4b | Firmware voice allocation + sequencing | built, verified on hardware |
 | 5 | Sample-accurate sequencer | closed by 4b |
 | 6 | Xsynth ISA + LLVM fork | not started |
 

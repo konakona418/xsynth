@@ -463,7 +463,7 @@ sequencing**。band-limited wavetable 推迟到 Phase 6 之后——那时有硬
 
 固件目前只做一对一转发，不做任何决策。
 
-#### Phase 4b 实际结果（已构建、已测试，尚未上板）
+#### Phase 4b 实际结果（已构建、已测试、**已上板验证**）
 
 全部是固件工作：mailbox、命令 FIFO、`CommandScheduler`、`REG_SAMPLES` 都已具备，
 所以**零硬件改动、零 build**。Phase 5 随之关闭。
@@ -486,6 +486,20 @@ sequencing**。band-limited wavetable 推迟到 Phase 6 之后——那时有硬
 擅长的事：证明接线是对的。
 
 实测：**代码 1960 字节、.bss 3196 字节**，占 8 KB 的 63%，栈还剩约 3 KB。
+比特流与 4a 相同：**6498 LUT4 (75%)、3566 DFF (55%)、12/26 BSRAM**。
+
+上板验证（录音后测量，不靠耳朵）：
+
+- 不点名 voice 连开三个音 → 出和弦，说明三个都分配出去了。
+- 按音高 note-off → 只掐掉它指名的那个（E4 消失，C4 和 G4 继续），说明固件
+  靠 step 找对了 voice。
+- 两个相隔恰好 48000 sample 的调度音符，实测落在相隔 **48003** sample。这 3 个
+  sample 是测量而非引擎：两个音高不同，saw 穿越检测阈值的点本就不同。间隔由
+  引擎数 sample，是精确的。
+
+上板才发现的 bug：`set_envelope` 四个阶段 = 4 条命令，而一帧 32 字节只装得下
+3 条，帧构造器直接拒绝。`send_commands` 现在会跨帧拆分。单元测试抓不到，因为
+它们从没一次发过四条。
 
 三个踩到的坑（已写入 HANDOFF）：
 

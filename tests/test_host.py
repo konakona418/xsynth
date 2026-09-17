@@ -392,3 +392,25 @@ def test_a_note_off_needs_a_pitch_or_a_voice():
     args = _args(action="note-off", voice=2)
     _resolve(args)
     assert args.voice == 2
+
+
+def test_more_commands_than_fit_go_in_several_frames():
+    """A payload is 32 bytes and a command is 8, so three fit and a fourth
+    needs its own frame. The engine applies them in order either way."""
+    fake = _FakeSerial()
+    client = XsynthClient(transport=fake)
+    commands = [Command(OP_SET_ATTACK, value=i) for i in range(4)]
+    client.send_commands(commands)
+
+    assert bytes(fake.written) == (
+        encode_commands(commands[:3]) + encode_commands(commands[3:])
+    )
+
+
+def test_an_envelope_with_every_stage_is_four_commands_in_two_frames():
+    fake = _FakeSerial()
+    client = XsynthClient(transport=fake)
+    client.set_envelope(attack=0.01, decay=0.2, sustain=0.5, release=0.4)
+
+    written = bytes(fake.written)
+    assert written.count(b"\xaa\x55") == 2

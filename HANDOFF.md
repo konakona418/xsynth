@@ -1,14 +1,15 @@
 # Handoff / current state
 
-_Last updated: Phase 4a built and simulated, not yet verified on hardware._
+_Last updated: Phases 4a and 4b both verified on hardware._
 
 ## Where we are
 
-**Phases 0, 1, 2, 3a and 3b are all done and verified on hardware; Phase 4a is
-built and covered by simulation.** The Tang Nano 9K sends full HDMI
-(640x480@60 colour bars plus an eight-voice, 48 kHz wavetable engine), a host
-drives that engine live over the USB UART, and a PicoRV32 soft core runs
-programs the host uploads — including the one that owns the command path.
+**Phases 0, 1, 2, 3a, 3b, 4a and 4b are all done and verified on hardware**,
+which also closes Phase 5. The Tang Nano 9K sends full HDMI (640x480@60 colour
+bars plus an eight-voice, 48 kHz wavetable engine), a host drives that engine
+live over the USB UART, and a PicoRV32 soft core runs programs the host
+uploads — including the one that decides which voice a note goes to and when
+it is applied.
 
 ```
 uv run xsynth sim   --phase 2                  # Amaranth simulation, no toolchain
@@ -160,12 +161,19 @@ cyan, green, magenta, red, blue, black across the row.
 The same card exposes an HDMI audio input over USB:
 
 ```bash
-SRC=alsa_input.usb-MACROSILICON_C1-1_USB3_Video_20210623-02.analog-stereo
+SRC=alsa_input.usb-MACROSILICON_C1-1_USB3_Video_20210621-02.analog-stereo
 pactl set-source-mute "$SRC" 0     # it ships MUTED; recordings are all-zero otherwise
 pactl set-source-volume "$SRC" 100%
 timeout 15 parecord --device="$SRC" --file-format=wav --rate=48000 \
         --channels=2 --format=s16le tone.wav
 ```
+
+**`parecord -d` does nothing** — it records until it is killed, so bound it with
+`timeout` and let the header say how much was captured. The source also sits
+`SUSPENDED`, and the ~2 seconds it takes to wake mean the file starts later than
+the command did; a throwaway `timeout 2 parecord` first makes the next one start
+promptly, and any test that cares about *when* something happened should measure
+an interval inside the recording rather than between the file and the wall clock.
 
 Then measure it rather than trusting your ears:
 
@@ -386,7 +394,7 @@ wire, and `xsynth sim --phase 2` prints a three-voice chord and an envelope.
 
 ### Phase 4b — the firmware starts deciding
 
-**Built and tested, not yet on hardware.** The design reasoning is in PLAN.md;
+**Built, tested and verified on hardware.** The design reasoning is in PLAN.md;
 what follows is what exists and what bit back.
 
 All firmware: the mailbox, the command FIFO, the `CommandScheduler` and
@@ -432,10 +440,34 @@ Things that bit, all now in the gotchas:
   `memcpy` that a freestanding build has not got.
 
 Measured: **1960 bytes of code, 3196 of .bss** -- 63% of the eight kilobytes,
-with three kilobytes left for a stack that has no recursion under it.
+with three kilobytes left for a stack that has no recursion under it. The
+bitstream is unchanged from 4a at **6498 LUT4 (75%), 3566 DFF (55%), 12/26
+BSRAM**, `clk_pixel` closing at 78 MHz against the 25.2 it needs.
+
+Verified on the board, by recording the HDMI audio and measuring it:
+
+* Three notes started with no voice named came out as a chord, which means the
+  allocator placed all three.
+* A note-off by pitch removed exactly the note it named -- the E4 left while the
+  C4 and G4 kept sounding -- so the firmware found the right voice by its step.
+* Two notes scheduled exactly 48000 samples apart landed **48003** samples
+  apart. The three samples are the measurement, not the engine: the two notes
+  are at different pitches, so their saws cross the detection threshold at
+  different points. Intervals come from the engine counting samples, and they
+  are exact.
+
+One bug only the board could have found: `set_envelope` with all four stages is
+four commands, and a payload is 32 bytes with 8 to a command, so it was one
+command past the limit and the frame builder refused. `send_commands` now splits
+across frames. The unit tests could not have caught it because they never sent
+four at once.
 
 ## Gotchas learned the hard way
 
+* **`parecord -d` is a lie.** It records until it is killed, so a "3 second"
+  capture runs as long as the process does. Bound it with `timeout`, and note
+  that the device takes ~2 seconds to wake from `SUSPENDED`, so the file starts
+  later than the command did. Measure intervals inside the recording.
 * **RV32I has no divider and `-nostdlib` has no `__umodsi3`.** A ring buffer
   sized to anything but a power of two wants a modulo, and the link fails with
   an undefined symbol rather than doing anything useful. Mask instead.

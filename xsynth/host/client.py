@@ -24,6 +24,7 @@ from serial.tools import list_ports
 from xsynth.hdl.audio import DEFAULT_TONE_HZ, PEAK, phase_step
 from xsynth.hdl.voice import ENV_BITS, ENV_SHIFT
 from xsynth.protocol import (
+    COMMAND_BYTES,
     CPU_HALTED,
     CPU_RUNNING,
     CPU_TRAP,
@@ -33,6 +34,7 @@ from xsynth.protocol import (
     FLAG_LOCKED,
     FLAG_OVERFLOW,
     FLAG_UNKNOWN_PACKET,
+    MAX_PAYLOAD,
     OP_CLEAR_SCHEDULE,
     OP_NOTE_OFF,
     OP_NOTE_ON,
@@ -51,6 +53,7 @@ from xsynth.protocol import (
     PKT_PONG,
     PKT_STATUS,
     PKT_STATUS_REPLY,
+    PKT_COMMANDS,
     STATUS_ARGUMENTS,
     STATUS_CPU_COUNTER,
     STATUS_CPU_FLAGS,
@@ -193,10 +196,21 @@ class XsynthClient:
         self.send_frame(encode_frame(payload))
 
     def send_commands(self, commands) -> None:
-        payload = bytearray([0x01])
-        for command in commands:
-            payload += command.pack()
-        self.send(bytes(payload))
+        """Frame commands, splitting them if there are more than fit.
+
+        A payload is 32 bytes and a command is 8 of them, so three go in one
+        frame and a fourth needs one of its own. The engine applies them in the
+        order they arrive, so the split is invisible -- but `set_envelope` with
+        all four stages is one command past the limit, which is exactly the
+        kind of thing that only shows up on hardware.
+        """
+        commands = list(commands)
+        per_frame = (MAX_PAYLOAD - 1) // COMMAND_BYTES
+        for start in range(0, len(commands), per_frame):
+            payload = bytearray([PKT_COMMANDS])
+            for command in commands[start:start + per_frame]:
+                payload += command.pack()
+            self.send(bytes(payload))
 
     def read_frame(self, timeout: float | None = None) -> bytes | None:
         """Read until one frame passes its checksum, or the timeout expires."""
