@@ -21,11 +21,13 @@ from amaranth.sim import Simulator
 from xsynth.hdl.audio import PEAK, phase_step, to_signed
 from xsynth.hdl.phase2 import Phase2Core
 from xsynth.hdl.uart import UartRx, UartTx, uart_timing
-from xsynth.hdl.voice import WAVES
+from xsynth.hdl.voice import ENV_SHIFT, VOICES, WAVES
 from xsynth.protocol import (
     FLAG_LOCKED,
     OP_NOTE_OFF,
     OP_NOTE_ON,
+    OP_SET_ATTACK,
+    OP_SET_MASTER,
     OP_SET_WAVE,
     PKT_PING,
     PKT_PONG,
@@ -49,6 +51,9 @@ DEFAULT_BAUD = 1_000_000
 STROBE_PERIOD = 32
 
 TEST_SAMPLE_RATE = PIXEL_HZ // STROBE_PERIOD
+
+# The envelope's full swing, in the accumulator's units.
+TOP = PEAK << ENV_SHIFT
 
 
 class CoreHarness(Elaboratable):
@@ -80,6 +85,7 @@ class Result:
     wave: int = 0
     amp: int = 0
     level: int = 0
+    envelopes: list[int] = field(default_factory=list)
     fifo_level: int = 0
     error_flags: int = 0
 
@@ -116,6 +122,10 @@ def run_scenario(frames, *, baud: int = DEFAULT_BAUD, cycles: int = 15_000,
         result.wave = ctx.get(core.voice.wave[0])
         result.amp = ctx.get(core.amp)
         result.level = ctx.get(core.voice.level[0])
+        result.envelopes = [
+            ctx.get(core.voice.env[voice]) >> ENV_SHIFT
+            for voice in range(VOICES)
+        ]
         result.fifo_level = ctx.get(core.fifo_level)
         result.error_flags = ctx.get(core.error_flags)
         finished = True
@@ -170,14 +180,45 @@ def run(*, vcd: str | None = None) -> None:
     )
     assert played.amp == PEAK, "the note never turned on"
     measured = measure_frequency(played.audio, TEST_SAMPLE_RATE)
-    print(f"note_on: wave={WAVES[played.wave]} amp={played.amp} "
+    print(f"note_on: wave={WAVES[played.wave]} level={played.amp} "
           f"measured {measured:.1f} Hz (asked for {tone:.1f})")
 
-    stopped = run_scenario(
-        [encode_commands([
-            Command(OP_NOTE_ON, value=step),
-            Command(OP_NOTE_OFF, delay=8),
-        ])],
+    chord = run_scenario(
+        [
+            encode_commands([Command(OP_SET_MASTER, value=PEAK // 4)]),
+            encode_commands([
+                Command(OP_NOTE_ON, voice=0, value=step),
+                Command(OP_NOTE_ON, voice=1, value=step * 5 // 4),
+                Command(OP_NOTE_ON, voice=2, value=step * 3 // 2),
+            ]),
+        ],
+        cycles=25_000,
     )
-    assert stopped.amp == 0, "the note never turned off"
+    assert chord.envelopes[:3] == [PEAK] * 3, "the chord did not fill three voices"
+    print(f"chord: three voices at {chord.envelopes[:3]}, the rest silent")
+
+    envelope = run_scenario(
+        [encode_commands([
+            Command(OP_SET_ATTACK, value=TOP // 40),
+            Command(OP_NOTE_ON, value=step),
+            Command(OP_NOTE_OFF, delay=100),
+        ])],
+        cycles=25_000,
+    )
+    print(f"envelope: attack rate {TOP // 40}, released to "
+          f"{envelope.envelopes[0]}")
+
+    stopped = run_scenario(
+        [
+            encode_commands([
+                Command(OP_NOTE_ON, voice=0, value=step),
+                Command(OP_NOTE_ON, voice=1, value=step * 5 // 4),
+            ]),
+            encode_commands([
+                Command(OP_NOTE_OFF, voice=0, delay=8),
+                Command(OP_NOTE_OFF, voice=1, delay=0),
+            ]),
+        ],
+    )
+    assert stopped.envelopes[:2] == [0, 0], "a voice never turned off"
     print("note_off: silenced")

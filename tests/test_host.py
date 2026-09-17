@@ -6,14 +6,20 @@ sends and the way it decodes replies are both pinned down without a board.
 
 import pytest
 
-from xsynth.host.client import Status, XsynthClient
-from xsynth.hdl.audio import phase_step
+from xsynth.host.client import ENV_TOP, Status, XsynthClient
+from xsynth.hdl.audio import PEAK, phase_step
 from xsynth.hdl.voice import WAVES
 from xsynth.protocol import (
     CPU_RUNNING,
     FLAG_CRC_ERROR,
     FLAG_LOCKED,
     OP_NOTE_ON,
+    OP_NOTE_OFF,
+    OP_SET_ATTACK,
+    OP_SET_DECAY,
+    OP_SET_MASTER,
+    OP_SET_RELEASE,
+    OP_SET_SUSTAIN,
     OP_SET_WAVE,
     PKT_PING,
     PKT_PONG,
@@ -163,3 +169,77 @@ def test_a_load_image_is_rounded_up_to_whole_words():
     client.load(b"\x01\x02\x03")  # not a whole number of words
 
     assert bytes(fake.written) == b"".join(load_packets(b"\x01\x02\x03"))
+
+
+def test_a_note_can_name_a_voice():
+    fake = _FakeSerial()
+    client = XsynthClient(transport=fake)
+    client.note_on(440.0, voice=3)
+    client.note_off(voice=3)
+
+    assert bytes(fake.written) == (
+        encode_commands([
+            Command(OP_NOTE_ON, voice=3, value=phase_step(440.0, 48_000)),
+        ])
+        + encode_commands([Command(OP_NOTE_OFF, voice=3)])
+    )
+
+
+def test_an_envelope_stage_is_a_time_to_cross_the_envelope():
+    fake = _FakeSerial()
+    client = XsynthClient(transport=fake)
+    client.set_envelope(attack=1.0)
+
+    rate = round(ENV_TOP / 48_000)
+    assert bytes(fake.written) == encode_commands([
+        Command(OP_SET_ATTACK, value=rate),
+    ])
+
+
+def test_a_stage_shorter_than_a_sample_is_instant():
+    # The engine's own default is the fastest rate there is, and the client
+    # must not ask for something the register cannot hold.
+    assert XsynthClient.envelope_rate(0.0) == (1 << 24) - 1
+    assert XsynthClient.envelope_rate(-1.0) == (1 << 24) - 1
+    assert XsynthClient.envelope_rate(1e-9) == (1 << 24) - 1
+
+
+def test_a_sustain_level_is_a_fraction_of_the_note_peak():
+    fake = _FakeSerial()
+    client = XsynthClient(transport=fake)
+    client.set_envelope(sustain=0.5)
+
+    assert bytes(fake.written) == encode_commands([
+        Command(OP_SET_SUSTAIN, value=round(0.5 * PEAK)),
+    ])
+
+
+def test_the_stages_that_were_not_named_are_not_sent():
+    fake = _FakeSerial()
+    client = XsynthClient(transport=fake)
+    client.set_envelope(decay=0.2, release=0.4)
+
+    assert bytes(fake.written) == encode_commands([
+        Command(OP_SET_DECAY, value=XsynthClient.envelope_rate(0.2)),
+        Command(OP_SET_RELEASE, value=XsynthClient.envelope_rate(0.4)),
+    ])
+
+
+def test_the_master_scales_the_mix():
+    fake = _FakeSerial()
+    client = XsynthClient(transport=fake)
+    client.set_master(0.25)
+
+    assert bytes(fake.written) == encode_commands([
+        Command(OP_SET_MASTER, value=round(0.25 * PEAK)),
+    ])
+
+
+def test_a_level_outside_the_unit_range_is_rejected():
+    fake = _FakeSerial()
+    client = XsynthClient(transport=fake)
+    for fraction in (1.5, -0.1):
+        with pytest.raises(ValueError):
+            client.set_master(fraction)
+        with pytest.raises(ValueError):
+            client.level_for(fraction)

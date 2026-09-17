@@ -82,22 +82,43 @@ def _add_host(parser: argparse.ArgumentParser) -> None:
     note_on.add_argument("--note", type=int, default=None,
                          help="MIDI note number, overriding --hz")
     note_on.add_argument("--wave", choices=WAVES, default=None)
+    note_on.add_argument("--voice", type=int, default=0,
+                         help="which of the eight voices to use")
     note_on.add_argument("--delay", type=int, default=0)
 
     note_off = actions.add_parser("note-off", help="stop the note")
+    note_off.add_argument("--voice", type=int, default=0)
     note_off.add_argument("--delay", type=int, default=0)
 
     freq = actions.add_parser("freq", help="change the frequency")
     freq.add_argument("hz", type=float)
+    freq.add_argument("--voice", type=int, default=0)
     freq.add_argument("--delay", type=int, default=0)
 
     wave = actions.add_parser("wave", help="select a waveform")
     wave.add_argument("name", choices=WAVES)
+    wave.add_argument("--voice", type=int, default=0)
     wave.add_argument("--delay", type=int, default=0)
 
-    amp = actions.add_parser("amp", help="set the amplitude, 0.0 to 1.0")
+    amp = actions.add_parser("amp", help="set the note level, 0.0 to 1.0")
     amp.add_argument("fraction", type=float)
+    amp.add_argument("--voice", type=int, default=0)
     amp.add_argument("--delay", type=int, default=0)
+
+    envelope = actions.add_parser(
+        "envelope", help="set the shared ADSR; stages left out are untouched")
+    envelope.add_argument("--attack", type=float, default=None,
+                          help="seconds for the attack to cross the envelope")
+    envelope.add_argument("--decay", type=float, default=None)
+    envelope.add_argument("--sustain", type=float, default=None,
+                          help="fraction of the note's own peak, 0.0 to 1.0")
+    envelope.add_argument("--release", type=float, default=None)
+    envelope.add_argument("--delay", type=int, default=0)
+
+    master = actions.add_parser(
+        "master", help="scale the whole mix, 0.0 to 1.0")
+    master.add_argument("fraction", type=float)
+    master.add_argument("--delay", type=int, default=0)
 
 
 def _note_to_hz(note: int) -> float:
@@ -151,20 +172,37 @@ def _run_host(args) -> int:
             print("reset sent")
         elif args.action == "note-on":
             hz = _note_to_hz(args.note) if args.note is not None else args.hz
-            client.note_on(hz, wave=args.wave, delay=args.delay)
-            print(f"note on at {hz:.2f} Hz")
+            client.note_on(hz, voice=args.voice, wave=args.wave,
+                           delay=args.delay)
+            print(f"note on at {hz:.2f} Hz, voice {args.voice}")
         elif args.action == "note-off":
-            client.note_off(delay=args.delay)
-            print("note off")
+            client.note_off(voice=args.voice, delay=args.delay)
+            print(f"note off, voice {args.voice}")
         elif args.action == "freq":
-            client.set_freq(args.hz, delay=args.delay)
-            print(f"frequency {args.hz:.2f} Hz")
+            client.set_freq(args.hz, voice=args.voice, delay=args.delay)
+            print(f"frequency {args.hz:.2f} Hz, voice {args.voice}")
         elif args.action == "wave":
-            client.set_wave(args.name, delay=args.delay)
-            print(f"waveform {args.name}")
+            client.set_wave(args.name, voice=args.voice, delay=args.delay)
+            print(f"waveform {args.name}, voice {args.voice}")
         elif args.action == "amp":
-            client.set_amp(args.fraction, delay=args.delay)
-            print(f"amplitude {args.fraction}")
+            client.set_amp(args.fraction, voice=args.voice, delay=args.delay)
+            print(f"level {args.fraction}, voice {args.voice}")
+        elif args.action == "envelope":
+            client.set_envelope(
+                attack=args.attack, decay=args.decay, sustain=args.sustain,
+                release=args.release, delay=args.delay,
+            )
+            stages = {name: value for name, value in (
+                ("attack", args.attack), ("decay", args.decay),
+                ("sustain", args.sustain), ("release", args.release),
+            ) if value is not None}
+            if not stages:
+                raise SystemExit("envelope: name at least one stage")
+            print("envelope " + " ".join(
+                f"{name}={value}" for name, value in stages.items()))
+        elif args.action == "master":
+            client.set_master(args.fraction, delay=args.delay)
+            print(f"master {args.fraction}")
         else:  # pragma: no cover - argparse guarantees a known action
             raise SystemExit(f"unknown host action {args.action!r}")
     return 0

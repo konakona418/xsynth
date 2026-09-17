@@ -9,9 +9,10 @@ the phase-by-phase plan.
 
 ## Status
 
-Phases 0, 1, 2 and 3a are implemented and verified on hardware: full HDMI video
-(640x480@60), a 48 kHz / 16-bit stereo voice, live control of that voice over the
-USB UART, and a PicoRV32 soft core that runs programs the host uploads.
+Phases 0, 1, 2, 3a and 3b are implemented and verified on hardware: full HDMI
+video (640x480@60), 48 kHz / 16-bit stereo audio, live control of the engine
+over the USB UART, and a PicoRV32 soft core that runs programs the host
+uploads — including the one that owns the command path.
 
 | Phase | Deliverable | State |
 | --- | --- | --- |
@@ -20,9 +21,14 @@ USB UART, and a PicoRV32 soft core that runs programs the host uploads.
 | 2 | UART -> command FIFO -> wavetable voice | built, verified on hardware |
 | 3a | PicoRV32 SoC + program upload | built, verified on hardware |
 | 3b | PCPI, firmware owns the command path | built, verified on hardware |
-| 4 | 8-voice wavetable engine | not started |
+| 4a | 8-voice engine, ADSR, saturating mix | built and simulated |
+| 4b | Firmware voice allocation + sequencing | not started |
 | 5 | Sample-accurate sequencer | not started |
 | 6 | Xsynth ISA + LLVM fork | not started |
+
+Phase 4 was planned with a filter; it was dropped in favour of band-limited
+wavetables, which fix the aliasing at its source rather than after it. PLAN.md
+records the reasoning.
 
 ## Toolchain
 
@@ -61,6 +67,17 @@ uv run xsynth build --phase 2 --no-flash
 uv run xsynth host status
 uv run xsynth host note-on --hz 440 --wave saw
 uv run xsynth host note-off
+```
+
+The engine has eight voices. A host can name one, or leave it to the firmware
+once the allocator exists; until then, `--voice` picks it:
+
+```bash
+uv run xsynth host envelope --attack 0.01 --decay 0.2 --sustain 0.5 --release 0.4
+uv run xsynth host master 0.25
+uv run xsynth host note-on --hz 440 --voice 0
+uv run xsynth host note-on --hz 554 --voice 1
+uv run xsynth host note-off --voice 0
 ```
 
 Phase 3 also runs a soft core. The firmware is built with clang (the LLVM
@@ -124,6 +141,18 @@ The delay is relative, so the engine needs no absolute time base and a host can
 send a whole sequence in one burst. The frame decoder validates the checksum
 before anything reaches the FIFO, so a corrupted frame cannot disturb a later
 one.
+
+A command's `voice` field selects one of the eight voices for the opcodes that
+name one (`NOTE_ON`, `NOTE_OFF`, `SET_FREQ`, `SET_WAVE`, `SET_AMP`). The
+envelope settings are global — one set of rates shared by every voice, as on
+almost every synth — while the envelope's level and stage are per voice.
+`SET_AMP` is the note's own level, which scales how far its attack travels.
+
+`OP_SET_ATTACK`, `OP_SET_DECAY` and `OP_SET_RELEASE` carry a 24-bit per-sample
+increment, not a time; `XsynthClient.envelope_rate` converts seconds into one,
+because that arithmetic belongs where floating point exists. `OP_SET_MASTER`
+scales the whole mix, which is how a host keeps an eight-voice chord inside the
+rails.
 
 Besides `COMMANDS`, `PING` and `STATUS`, phase 3 adds `LOAD` (a target address
 and a block of words, for uploading a program) and `RUN` (the CPU's run

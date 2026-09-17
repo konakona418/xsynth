@@ -1,12 +1,13 @@
 # Handoff / current state
 
-_Last updated: Phase 3b verified on hardware._
+_Last updated: Phase 4a built and simulated, not yet verified on hardware._
 
 ## Where we are
 
-**Phases 0, 1, 2, 3a and 3b are all done and verified on hardware.** The Tang
-Nano 9K sends full HDMI (640x480@60 colour bars plus a 48 kHz wavetable voice),
-a host drives that voice live over the USB UART, and a PicoRV32 soft core runs
+**Phases 0, 1, 2, 3a and 3b are all done and verified on hardware; Phase 4a is
+built and covered by simulation.** The Tang Nano 9K sends full HDMI
+(640x480@60 colour bars plus an eight-voice, 48 kHz wavetable engine), a host
+drives that engine live over the USB UART, and a PicoRV32 soft core runs
 programs the host uploads — including the one that owns the command path.
 
 ```
@@ -15,10 +16,18 @@ uv run xsynth build --phase 3 --no-program     # synthesize + PnR + pack only
 uv run xsynth build --phase 3 --no-flash       # build + program SRAM (volatile)
 uv run xsynth host  status                     # talk to a programmed board
 uv run xsynth host  load                       # build, upload and run the firmware
-uv run pytest -q                               # 111 tests
+uv run pytest -q                               # the whole suite, across the cores
 ```
 
 A phase 3 build takes about 6 minutes; see the phase 3a section for why.
+
+**Builds are expensive, simulations are not, so lean on the tests.** The
+toolchain is entirely YoWASP (WebAssembly) and nothing native is installed;
+`yosys` exists in `extra` but `nextpnr-himbaechel-gowin` and `yosys-slang` are
+in neither the repos nor the AUR, so going native means building nextpnr from
+source, and yosys and nextpnr cannot be mixed across the two because they talk
+RTLIL JSON. The standing decision is to stay on YoWASP and therefore to reach
+for a build only when the simulation cannot answer the question.
 
 The default build is 640x480, colour bars. Useful flags:
 `--pattern bars|cycle|<hex>`, `--video-mode 640x480|1280x720`, `--tone <hz>`
@@ -26,8 +35,10 @@ The default build is 640x480, colour bars. Useful flags:
 to DVI, phase 1+ to HDMI).
 
 Host actions: `ping`, `status`, `reset`, `load [image] [--no-run]`,
-`run [--stop]`, `note-on [--hz|--note] [--wave]`, `note-off`, `freq <hz>`,
-`wave <name>`, `amp <0..1>`.
+`run [--stop]`, `note-on [--hz|--note] [--wave] [--voice]`,
+`note-off [--voice]`, `freq <hz> [--voice]`, `wave <name> [--voice]`,
+`amp <0..1> [--voice]`, `envelope [--attack|--decay|--sustain|--release]`,
+`master <0..1>`.
 
 ### The control UART is /dev/ttyUSB1
 
@@ -329,15 +340,107 @@ time is unchanged at roughly six minutes.
 `xsynth sim --phase 3` runs the whole chain under iverilog: it boots the
 firmware, plays a note through it, and stops it again.
 
-### Next: Phase 4
+### Phase 4a — eight voices, one table port (built, simulated, not on hardware)
 
-Voice allocation and sequencing in firmware: several voices, a note-to-voice
-allocator, and sample-accurate scheduling using the command `delay` field. The
-hardware already supports four voices; the firmware is what will drive more
-than one.
+The engine was one voice. A voice needs a wavetable lookup per sample and the
+tables live in one BSRAM, whose ports are far too precious to replicate the
+bank eight times over, so `VoiceBank` walks the voices instead: two pixel
+clocks each, sixteen for the eight of them, three percent of the 525 a 48 kHz
+sample leaves in the 25.2 MHz pixel domain. Every voice shares one read port,
+one multiplier and one accumulator.
+
+The awkward part is that a command arrives whenever it arrives, and the walk is
+writing a voice's registers back for two cycles out of every sixteen. A command
+is therefore parked and applied when the walk reaches the voice it names —
+the only moment that voice is not being written back — which keeps the two
+writers from racing without stalling either of them.
+
+Design decisions worth keeping:
+
+* **The envelope settings are global; the envelope state is per voice.** One
+  set of rates, one level and one stage each. That is what a synth normally
+  does, and it means a note keeps its own shape while the panel is retuned.
+* **Velocity is the envelope's peak, not a gain on top of it.** A quiet note is
+  quiet all the way through its decay. The decay's floor is the sustain level
+  capped by the note's own peak, so a quiet note cannot swell to meet it.
+* **The envelope runs finer than the sample it produces** — the level is the
+  top sixteen bits of a 24-bit accumulator. That is what turns a 16-bit rate
+  into a useful range of times, from about three minutes down to instant.
+* **The mix saturates.** Eight full-scale voices sum well past the rail, and a
+  loud chord is better than a wrapping one. `master` is how a host keeps a
+  chord inside it.
+* **The table address is combinational.** The BSRAM read port is registered, so
+  registering the address too would push the data a cycle late; the walk is two
+  clocks per voice precisely because the read is one of them.
+
+New commands (all in `xsynth/protocol.py`): `OP_SET_ATTACK`, `OP_SET_DECAY`,
+`OP_SET_SUSTAIN`, `OP_SET_RELEASE` (the last three in 24-bit units), and
+`OP_SET_MASTER`. `OP_SET_AMP` now means the note's own level. The host turns
+seconds into rates (`XsynthClient.envelope_rate`) and fractions into levels
+(`level_from`), because that arithmetic belongs where floating point exists.
+
+Simulation covers the whole path: `tests/test_voice.py` drives the bank
+directly and checks each stage of the envelope against exact arithmetic,
+`tests/test_phase2.py` sends a chord and a voice-addressed note-off over the
+wire, and `xsynth sim --phase 2` prints a three-voice chord and an envelope.
+
+### Next: Phase 4b — the firmware starts deciding
+
+**The filter is dropped; do not build one.** PLAN.md records the reasoning. The
+short version: a filter treats the symptom (our naive saw/square alias badly)
+and band-limited wavetables treat the cause, and it is the weakest item left for
+the co-design story — it is just more DSP in a slot whose reuse is already
+proven, whereas the allocator and the sequencer show the *soft core making
+decisions*, which is the thing this project exists to show. It was a checkbox
+in a plan written before we knew where the difficulty was.
+
+So Phase 4b is firmware work, in `xsynth/sw/main.c`:
+
+* **A note-to-voice allocator.** A host should be able to send a note-on with no
+  voice in mind and have the firmware pick one. That needs the firmware to track
+  which voices are busy, which note each holds, and what to steal when all eight
+  are (oldest, or the one furthest into its release). It needs a way to tell a
+  host's note-on from a voice-addressed one — the `voice` field is free for
+  that, and `0xFF` is the obvious "any".
+* **Sample-accurate sequencing** on the command `delay` field. The hardware
+  already honours `delay` exactly (that is Phase 2's `CommandScheduler`), so
+  what is missing is the firmware's ability to *emit* a schedule: absolute
+  timestamps in, relative delays out, without the FIFO overflowing.
+
+Both are decisions, not plumbing, which is the point. `xsynth/sw/main.c`
+currently forwards commands one to one and decides nothing.
+
+The engine itself is done: eight voices, a shared ADSR, per-voice level, a
+saturating mix and a master. `xsynth sim --phase 2` and `xsynth sim --phase 3`
+both exercise it, and the host can already address any voice
+(`note-on --voice N`).
 
 ## Gotchas learned the hard way
 
+* **A register holding a request must not also have an unconditional default.**
+  `d += pending.eq(0)` at the top of an `elaborate` looks like a harmless
+  default and is not: it clears the flag on the very next cycle, so a request
+  that is supposed to wait for something is gone before that something happens.
+  It only showed up for requests aimed past the first slot, which is why the
+  first two tests passed and the rest did not.
+* **A Python list of signals cannot be indexed by a signal.** `self.step[slot]`
+  raises `TypeError: list indices must be integers`. Reads go through
+  `Array(...)[slot]`; writes need `with m.Switch(slot)` and a `Case` per index.
+* **Do not register the address of a BSRAM read port.** Amaranth's synchronous
+  read port already registers the data, so an address register delays it by a
+  second cycle and the value read is the previous voice's. The address must be
+  combinational and the consumer waits exactly one cycle.
+* **A testbench constant is not a parameter.** `STROBE_PERIOD` was raised from
+  8 to 32 to give the voice walk room, but the generated Verilog still had
+  `reg [3:0] strobe_div`, so the strobe stayed at 16 cycles and the walk never
+  finished. Derive the width from the constant.
+* **Measure RMS, not peak, when the phase steps through the table faster than
+  once per entry.** Where the samples land relative to the sine's crest is then
+  an artefact of the frequency, and a peak assertion measures that instead of
+  the gain.
+* **Trim the leading silence before measuring anything from a scenario.** The
+  frame has to cross the UART, so a fifth of a short capture is zeros and every
+  average is diluted by them.
 * **HDMI audio samples are signed.** hdl-util zero-extends and left-justifies
   them, so an offset-binary (unsigned) sample is read as a big DC offset plus a
   squarish wave. The fundamental is still right, so it looks like a sample-rate

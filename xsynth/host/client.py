@@ -21,7 +21,8 @@ from dataclasses import dataclass
 import serial
 from serial.tools import list_ports
 
-from xsynth.hdl.audio import DEFAULT_TONE_HZ, phase_step
+from xsynth.hdl.audio import DEFAULT_TONE_HZ, PEAK, phase_step
+from xsynth.hdl.voice import ENV_BITS, ENV_SHIFT
 from xsynth.protocol import (
     CPU_HALTED,
     CPU_RUNNING,
@@ -36,7 +37,12 @@ from xsynth.protocol import (
     OP_NOTE_ON,
     OP_RESET,
     OP_SET_AMP,
+    OP_SET_ATTACK,
+    OP_SET_DECAY,
     OP_SET_FREQ,
+    OP_SET_MASTER,
+    OP_SET_RELEASE,
+    OP_SET_SUSTAIN,
     OP_SET_WAVE,
     PKT_ERROR,
     PKT_PING,
@@ -58,6 +64,11 @@ from xsynth.protocol import (
 
 SAMPLE_RATE = 48_000
 DEFAULT_BAUD = 115_200
+
+# The envelope's full swing, and the largest increment its 24-bit accumulator
+# takes: anything at or above that crosses it in a single sample.
+ENV_TOP = PEAK << ENV_SHIFT
+ENV_MAX = (1 << ENV_BITS) - 1
 DEFAULT_TIMEOUT = 1.0
 
 _FLAG_NAMES = (
@@ -237,15 +248,45 @@ class XsynthClient:
 
     def set_amp(self, fraction: float, *, voice: int = 0,
                 delay: int = 0) -> None:
-        if not 0.0 <= fraction <= 1.0:
-            raise ValueError("amplitude must be between 0 and 1")
-        scale = round(fraction * ((1 << 15) - 1))
         self.send_commands([
-            Command(OP_SET_AMP, voice=voice, value=scale, delay=delay),
+            Command(OP_SET_AMP, voice=voice, value=self.level_for(fraction),
+                    delay=delay),
         ])
 
     def set_wave(self, wave: str, *, voice: int = 0, delay: int = 0) -> None:
         self.send_commands([self.wave_command(wave, voice=voice, delay=delay)])
+
+    def set_envelope(self, *, attack: float | None = None,
+                     decay: float | None = None,
+                     sustain: float | None = None,
+                     release: float | None = None,
+                     delay: int = 0) -> None:
+        """Set the shared ADSR, each stage in the units it is played in.
+
+        ``attack``, ``decay`` and ``release`` are seconds for the stage to
+        cross the whole envelope; ``sustain`` is a fraction of the note's own
+        peak. Only the stages named are sent, so a patch can be retuned one
+        knob at a time.
+        """
+        commands = []
+        for opcode, seconds in (
+            (OP_SET_ATTACK, attack), (OP_SET_DECAY, decay),
+            (OP_SET_RELEASE, release),
+        ):
+            if seconds is not None:
+                commands.append(Command(
+                    opcode, value=self.envelope_rate(seconds), delay=delay))
+        if sustain is not None:
+            commands.append(Command(
+                OP_SET_SUSTAIN, value=self.level_for(sustain), delay=delay))
+        self.send_commands(commands)
+
+    def set_master(self, fraction: float, *, delay: int = 0) -> None:
+        """Scale the whole mix. Eight voices at unity will clip; this is how a
+        chord is kept inside the rails."""
+        self.send_commands([
+            Command(OP_SET_MASTER, value=self.level_for(fraction), delay=delay),
+        ])
 
     def reset(self, *, delay: int = 0) -> None:
         self.send_commands([Command(OP_RESET, delay=delay)])
@@ -268,6 +309,25 @@ class XsynthClient:
     @staticmethod
     def step_for(hz: float) -> int:
         return phase_step(hz, SAMPLE_RATE)
+
+    @staticmethod
+    def level_for(fraction: float) -> int:
+        """A 0.0-1.0 fraction as the 16-bit level the engine wants."""
+        if not 0.0 <= fraction <= 1.0:
+            raise ValueError("level must be between 0 and 1")
+        return round(fraction * PEAK)
+
+    @staticmethod
+    def envelope_rate(seconds: float) -> int:
+        """The per-sample increment that crosses the envelope in ``seconds``.
+
+        The envelope is a 24-bit accumulator whose top bits are the level, so
+        a stage that crosses it in ``seconds`` moves ``ENV_TOP`` over that many
+        samples. Zero or less is instant, which is the engine's own default.
+        """
+        if seconds <= 0:
+            return ENV_MAX
+        return min(round(ENV_TOP / (seconds * SAMPLE_RATE)), ENV_MAX)
 
     @staticmethod
     def wave_command(wave: str, *, voice: int = 0, delay: int = 0) -> Command:

@@ -34,6 +34,7 @@ Xsynth 是面向 Tang Nano 9K、后续可移植到 Tang Nano 20K 的软硬件协
 | 内部数值格式 | 16-bit 样本、24-bit 数据通路、32-bit 累加器，最终饱和/舍入到 16-bit stereo |
 | DDS | 32-bit phase accumulator；Phase 1 使用 4096x16 sine wavetable |
 | 9K 默认配置 | 参数化设计；默认 8 voice、4 种波形、每张 2048x16 wavetable |
+| Filter | **不做**。改为将来用 band-limited wavetable（mipmap）从源头消除混叠，见 Phase 4b |
 | 复位策略 | PLL lock 后释放系统复位；HDMI 视频持续运行；synth/FIFO 支持独立软复位 |
 | Host 工具 | Python CLI，使用和 Amaranth 相同的 `uv` 环境 |
 | 验证策略 | Amaranth Python Simulator 为主，复用 `hdl-util/hdmi` 自带 Verilator 测试，上板做阶段验收 |
@@ -392,14 +393,75 @@ Phase 2 实际结果：
 - 在 525 cycles/sample 内时分复用 oscillator、envelope 和 mixer 资源。
 - 实现 ADSR、wave selection、voice allocation 所需状态。
 - 实现 24-bit mix path、32-bit accumulator 和 16-bit 饱和输出。
-- 加入基础 filter，优先从单个全局 biquad 开始，再评估 per-voice filter。
+- ~~加入基础 filter，优先从单个全局 biquad 开始，再评估 per-voice filter。~~ 见下方决策。
 - 记录 LUT、FF、BSRAM、DSP 和 timing 使用量。
 
 验收门：
 
-- 8 voice 复音、ADSR、多个 waveform 和 filter 均可实时控制。
+- 8 voice 复音、ADSR、多个 waveform ~~和 filter~~ 均可实时控制。
 - 每个 sample deadline 内完成全部运算。
 - 9K 资源与时序留有明确余量；无法满足时再缩减默认配置或启动 20K 移植。
+
+#### Phase 4a 实际结果（已构建、已仿真，尚未上板）
+
+拆成 4a（多 voice 引擎 + ADSR + mix）和 4b（filter + 固件 voice allocation）
+两步走。4a 完成。
+
+`VoiceBank` 取代了单 voice 的 `WavetableVoice` + `VoiceControl`。8 个 voice
+共用一条 BSRAM 读口、一个乘法器和一个累加器：**每个 voice 两个 pixel clock，
+8 个共 16 个**，占 48 kHz 下 525 周期的 3%。voice 状态（phase/step/wave/env/
+stage/level）各自是寄存器，读经 `Array` 多路选择，回写经 `Switch`。
+
+命令不在到达当拍生效，而是**停在 pending 寄存器里，等轮转走到它指名的
+voice 再应用**——那是该 voice 唯一不被回写的时刻，两个写者因此不用互相
+stall。轮转走完仍未被消费的命令（voice 越界）在轮转结束时丢弃。
+
+数值设计：
+
+- envelope 设置（attack/decay/sustain/release rate）**全局**，envelope 状态
+  （level、stage）**per voice**——这是合成器的常规做法，面板改包络时每个音
+  仍保持自己的形状。
+- velocity 是**包络的峰值**，不是包络之上的增益：轻音在整个衰减过程中都轻。
+  decay 的下限是 sustain 电平，且被该音自己的峰值封顶，所以轻音不会涨上去。
+- envelope 累加器 24-bit，输出取高 16 bit。多出的 8 bit 小数使 16-bit rate
+  对应的时间范围从约三分钟到瞬时。
+- mix 32-bit 累加，乘 master 后**饱和**到 16-bit。8 个满幅 voice 相加远超满
+  幅，饱和而不是回绕；`master` 是 host 让和弦不越界的手段。
+
+命令扩展（`xsynth/protocol.py`）：`OP_SET_ATTACK/DECAY/SUSTAIN/RELEASE`、
+`OP_SET_MASTER`；`OP_SET_AMP` 语义改为「该音的 level」。host 负责把秒换成
+rate（`XsynthClient.envelope_rate`）、把 0..1 换成电平（`level_for`）。
+
+仿真覆盖：`tests/test_voice.py` 直接驱动 voice bank 并用精确算术核对每个
+包络阶段；`tests/test_phase2.py` 通过整条 UART 路径发送和弦与按 voice 寻址的
+note-off；`xsynth sim --phase 2` 打印三音和弦与包络。
+
+实测（`build/top.tim`）：**6648 LUT4 (76%)、1426 ALU (22%)、3566 DFF (55%)、
+12/26 BSRAM**。比 3b 多约 1815 LUT4、1024 DFF。`clk_pixel` 最高 59.09 MHz
+（只需 25.2），`clk` 66.98 MHz（只需 27），余量充足。构建时间不变，约 6 分钟。
+
+#### Phase 4b 决策：不做 filter
+
+原计划是「优先从单个全局 biquad 开始」。做完 4a 后决定**不做**，理由：
+
+1. **filter 是治标。** 我们的 saw/square 是 naive 表，混叠才是根本问题。filter
+   只是把混叠压下去，而 **band-limited wavetable（mipmap）**——按音高选不同
+   谐波数的表——是从源头消除，音质收益更大，而且不需要用户去拧截止频率。
+2. **filter 是项目论点上最弱的一项。** 它不展示新的 co-design 想法，只是往
+   已经证明过的时分复用槽里再塞 DSP。8 个 voice 塞进 525 周期的 3% 已经证明
+   了资源可复用；filter 是同一论点的重复。而固件的 voice allocation 和
+   sequencing 展示的是**软核在做决策**，那才是这个项目真正要说的事。
+3. **成本不是问题，风险才是。** 全局 filter 只需约 400 LUT4（6648 → 约 7050，
+   82%），装得下；但定点 SVF 的稳定性、系数量化和极限环是真实风险，而且难以
+   靠听感验证。
+4. PLAN 里那句「和 filter 均可实时控制」是**写计划时**写的，那时还不知道难点
+   在哪、也不知道 naive 表会混叠。它是 checkbox，不是需求。
+
+所以 Phase 4b 改为：**固件的 note-to-voice 分配器与 sample-accurate
+sequencing**。band-limited wavetable 推迟到 Phase 6 之后——那时有硬件乘法器
+可用（Xsynth ISA / LLVM fork），正好是它该在的位置。
+
+固件目前只做一对一转发，不做任何决策。
 
 ### Phase 5：Sample-accurate sequencer
 
