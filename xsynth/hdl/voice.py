@@ -2,7 +2,7 @@
 
 Phase 1's :class:`~xsynth.hdl.audio.SineDDS` stays as it is (it is verified on
 hardware and is the reference for the 32-bit accumulator). This module is the
-parameterised engine PLAN.md calls for at Phase 4.
+parameterised engine Phase 4 calls for.
 
 **One table read port, many voices.** A voice needs a wavetable lookup per
 sample, and the tables live in one BSRAM. BSRAM ports are far too precious to
@@ -10,7 +10,7 @@ replicate the bank once per voice, so :class:`VoiceBank` walks the voices one at
 a time inside the 525 cycles a 48 kHz sample leaves in the 25.2 MHz pixel
 domain, and every voice shares one read port, one multiplier and one
 accumulator. The walk costs two cycles per voice, sixteen for eight of them:
-3% of the budget, which leaves the rest for the filter Phase 4b adds.
+3% of the budget.
 
 **The envelope settings are global, the envelope state is per voice.** That is
 what a synth normally does -- one set of rates, one level and one stage per
@@ -22,8 +22,8 @@ its decay. The decay's floor is the global sustain level, capped by the note's
 own peak so a quiet note cannot swell.
 
 The four tables are naive (not band-limited), so saw and square alias. That is
-deliberate: PLAN.md puts the real oscillator work later, and a naive table is
-the honest reference to measure that work against.
+deliberate: the real oscillator work -- band-limited mipmaps -- is deferred, and
+a naive table is the honest reference to measure it against.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """Phase 2: UART control of the wavetable voice.
 
-Acceptance gate (see PLAN.md): the host can turn notes on and off and change
+Acceptance gate: the host can turn notes on and off and change
 frequency and waveform in real time, malformed frames do not disturb later
 frames, and the command FIFO survives full/empty and random-phase conditions.
 

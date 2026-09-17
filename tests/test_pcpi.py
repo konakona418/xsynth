@@ -1,6 +1,6 @@
 """The command co-processor: pushing, and stalling when there is no room.
 
-The acceptance gate (see PLAN.md) is that a full command FIFO stalls the CPU
+The acceptance gate is that a full command FIFO stalls the CPU
 rather than losing a command. That is a property of the co-processor's
 handshake, so it is tested here at the signal level, where the FIFO depth can
 be made small enough to fill deliberately.

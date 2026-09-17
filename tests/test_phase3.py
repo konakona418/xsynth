@@ -1,6 +1,6 @@
 """Phase 3b: the soft core owns the command path.
 
-The acceptance gate (see PLAN.md) is that an uploaded PicoRV32 program drives
+The acceptance gate is that an uploaded PicoRV32 program drives
 the engine through the command FIFO, and that a full FIFO stalls the CPU rather
 than losing a command. Both are exercised here end to end, over the wire.
 """

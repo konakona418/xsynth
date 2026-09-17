@@ -13,3 +13,7 @@ wheels/
 .env
 
 output.vcd
+
+# Working notes, kept locally but not part of the repository.
+PLAN.md
+HANDOFF.md

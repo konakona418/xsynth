@@ -2,10 +2,11 @@
 
 A hardware/software co-designed FPGA synthesizer for the Sipeed Tang Nano 9K.
 
-The long-term goal is a RISC-V control plane (PicoRV32 + a custom `Xsynth`
-instruction set) driving a real-time DSP data plane, with 48 kHz / 16-bit
-stereo audio carried over HDMI. See [PLAN.md](PLAN.md) for the architecture and
-the phase-by-phase plan.
+A RISC-V control plane (PicoRV32) drives a real-time DSP data plane, with
+48 kHz / 16-bit stereo audio carried over HDMI. The two meet at a 64-bit command
+word that the firmware pushes into an asynchronous FIFO through a PCPI custom
+instruction: the FPGA owns every per-sample calculation, and the soft core owns
+every decision about what to play.
 
 ## Status
 
@@ -28,10 +29,10 @@ uploads — including the one that owns the command path.
 
 Phase 4 was planned with a filter; it was dropped in favour of band-limited
 wavetables, which fix the aliasing at its source rather than after it — that work
-is deferred and not scheduled against any phase. PLAN.md records the reasoning.
-Phase 5's other two work items — a monotonic sample
-counter and applying an event on its target sample — were finished as a side
-effect of Phase 2, so absolute timestamps in 4b were all that was left.
+is deferred and not scheduled against any phase. Phase 5's other two work items —
+a monotonic sample counter and applying an event on its target sample — were
+finished as a side effect of Phase 2, so absolute timestamps in 4b were all that
+was left.
 
 ## Toolchain
 

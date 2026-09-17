@@ -1,6 +1,6 @@
 """Phase 0: clock generation + DVI video output.
 
-Acceptance gate (see PLAN.md): a stable 640x480 @ 60.00 Hz picture on the
+Acceptance gate: a stable 640x480 @ 60.00 Hz picture on the
 monitor. Audio is disabled (``DVI_OUTPUT=1``) so that the HDMI data-island
 machinery is not yet in the critical path.
 """

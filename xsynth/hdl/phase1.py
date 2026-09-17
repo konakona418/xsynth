@@ -1,6 +1,6 @@
 """Phase 1: video plus a real 48 kHz audio path.
 
-Acceptance gate (see PLAN.md): the Phase 0 picture **and** an audible 440 Hz
+Acceptance gate: the Phase 0 picture **and** an audible 440 Hz
 tone. Unlike Phase 0 this builds a true HDMI signal (``DVI_OUTPUT=0``), so the
 data-island machinery is now in the critical path.
 
