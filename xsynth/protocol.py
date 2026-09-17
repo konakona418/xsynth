@@ -99,6 +99,13 @@ PER_VOICE_OPS = frozenset({
 # The opcodes the firmware acts on itself rather than forwarding.
 FIRMWARE_OPS = frozenset({OP_SCHEDULE_AT, OP_CLEAR_SCHEDULE})
 
+# How many scheduled events the firmware's ring holds. This is a firmware
+# constant -- it is twelve bytes of BSRAM each -- but it is also the contract a
+# host streams against: past this many outstanding events the firmware drops
+# them, silently, and a host that does not know the number cannot pace itself.
+# So it lives here, where both sides read it, rather than being repeated.
+SCHEDULE_ENTRIES = 256
+
 WAVES = ("sine", "saw", "square", "triangle")
 WAVE_INDEX = {name: index for index, name in enumerate(WAVES)}
 

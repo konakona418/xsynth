@@ -87,11 +87,22 @@ _FLAG_NAMES = (
 
 
 def find_port() -> str:
-    """Pick the one USB serial port, or explain why we cannot."""
+    """Pick the one USB serial port, or explain why we cannot.
+
+    A board with an FT2232 debugger offers two USB serial ports for the one
+    board: channel A is the JTAG interface, which is not a UART at all, and
+    channel B is the control UART. Only channel A says what it is, so the port
+    that announces itself as JTAG gets skipped -- otherwise every command would
+    need `--port`, which is a poor way to treat the common case.
+    """
     ports = list(list_ports.comports())
     usb = [port for port in ports if port.vid is not None]
     if len(usb) == 1:
         return usb[0].device
+    uart = [port for port in usb
+            if "jtag" not in (port.interface or "").lower()]
+    if len(uart) == 1:
+        return uart[0].device
     if len(ports) == 1:
         return ports[0].device
     if not ports:

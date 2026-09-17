@@ -71,6 +71,10 @@ uv run xsynth build --phase 2 --no-flash
 uv run xsynth host status
 uv run xsynth host note-on --hz 440 --wave saw
 uv run xsynth host note-off
+
+# Play a score, and hear what the HDMI sink received
+uv run xsynth play tune.txt
+uv run xsynth listen 5
 ```
 
 The engine has eight voices and the firmware allocates them. A note names no
@@ -105,6 +109,61 @@ without the host tracking which voice anything landed on. `anchor` takes the
 current sample count and makes everything after it relative to that, for a host
 that would rather not do the arithmetic.
 
+A whole piece goes in a file, one note a line, and `play` streams it into the
+firmware's schedule. The board keeps the time from there:
+
+```bash
+cat > tune.txt <<'EOF'
+; the header is the client's own parameter names
+wave saw
+attack 0.005
+decay 0.05
+sustain 0.0
+release 0.02
+master 0.4
+
+0.00  C4  0.20
+0.25  E4  0.20
+0.50  G4  0.20
+0.75  C5  0.80
+EOF
+uv run xsynth play tune.txt
+```
+
+Times are seconds, so what is written is what a recording is measured against.
+`;` starts a comment (`#` cannot: `A#3` is a note), and a pitch is a name
+(`C4`, `A#3`, `Bb3`) or a MIDI number. There is no velocity column, and that is
+not an oversight: `SET_AMP` addresses a voice, and with the firmware allocating
+voices a score cannot know which one a note will land on. See
+`xsynth/host/score.py`.
+
+The firmware holds 256 scheduled events and drops what does not fit, silently,
+so `play` streams into the ring rather than filling it once and walking away --
+which is why that capacity lives in `xsynth/protocol.py`, where the host can
+read it, instead of being a number only the firmware knows.
+
+To hear what came out of the HDMI sink:
+
+```bash
+uv run xsynth listen 5                 # record five seconds, play it back
+uv run xsynth listen 5 --output take.wav
+```
+
+It finds the capture card, unmutes it, records under `timeout`, and plays the
+file back. The unmuting and the `timeout` are the point: `parecord -d` does
+nothing, and the source ships muted, so a hand-rolled capture is a recipe with
+traps in it.
+
+The card itself is not to be trusted. It reports itself `RUNNING` and then
+sometimes delivers nothing at all for a whole capture, and since the board's
+own silence is exact zeroes there is no way to tell the two apart in the file.
+**A recording of nothing means try again, not that the board is broken** -- and
+when in doubt, listen live instead:
+
+```bash
+ffplay -f pulse -i <source> -showmode 2      # spectrum view, no file in between
+```
+
 Phase 3 also runs a soft core. The firmware is built with clang (the LLVM
 `riscv32` target) and uploaded over the same UART:
 
@@ -127,12 +186,14 @@ slows the sequencer down instead of losing notes. `host load` reports the
 firmware's identity through `cpu_stat`, which reads `0x5853594e` ("XSYN").
 
 The board's onboard debugger presents two USB serial interfaces: JTAG and the
-control UART. On Linux the UART is usually `/dev/ttyUSB1`; pass `--port` to
-choose explicitly, or let the client pick the only USB serial port.
+control UART, which on Linux are `/dev/ttyUSB0` and `/dev/ttyUSB1`. The JTAG one
+announces itself as such, so the client skips it and finds the UART on its own;
+pass `--port` to override.
 
 To check what the HDMI sink actually received, record it and measure it:
 
 ```bash
+uv run xsynth listen 5 --output tone.wav --no-play   # or parecord by hand
 uv run xsynth analyse tone.wav
 ```
 
@@ -214,7 +275,7 @@ xsynth/
   firmware.py      builds the RISC-V firmware with clang/ld.lld
   protocol.py      the control protocol, shared with the host tools
   hdl/             Amaranth RTL
-  host/            serial client for the control protocol
+  host/            serial client, score player, capture-card recorder
   platform/        board definitions, Gowin primitives, toolchain patches
   sim/             simulation benches (Amaranth, and iverilog for the CPU)
   sv/              Xsynth-authored SystemVerilog glue

@@ -49,7 +49,7 @@ def _define(name: str, text: str = CONTROL_H) -> int:
 
 
 VOICE_COUNT = _define("VOICE_COUNT", protocol_header())
-SCHEDULE_ENTRIES = _define("SCHEDULE_ENTRIES")
+SCHEDULE_ENTRIES = _define("SCHEDULE_ENTRIES", protocol_header())
 DISPATCH_WINDOW = _define("DISPATCH_WINDOW")
 CONTROL_MAX_OUT = _define("CONTROL_MAX_OUT")
 

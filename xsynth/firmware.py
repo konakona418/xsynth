@@ -5,8 +5,8 @@ compiles against is generated from those constants rather than checked in, so
 the two cannot drift apart.
 
 The toolchain is the LLVM one that is already on the system (``clang`` with the
-``riscv32`` target, ``ld.lld`` and ``llvm-objcopy``), which is also where
-Phase 6's custom instructions are headed.
+``riscv32`` target, ``ld.lld`` and ``llvm-objcopy``). There is no custom backend
+and no fork: the firmware's two trips into the co-processor are inline asm.
 """
 
 from __future__ import annotations
@@ -42,6 +42,7 @@ from xsynth.protocol import (
     OP_SET_SUSTAIN,
     OP_SET_WAVE,
     PKT_COMMANDS,
+    SCHEDULE_ENTRIES,
     VOICE_ANY,
 )
 
@@ -96,6 +97,7 @@ COMMAND_CONSTANTS = (
     ("OP_SET_MASTER", OP_SET_MASTER),
     ("OP_SCHEDULE_AT", OP_SCHEDULE_AT),
     ("OP_CLEAR_SCHEDULE", OP_CLEAR_SCHEDULE),
+    ("SCHEDULE_ENTRIES", SCHEDULE_ENTRIES),
 )
 
 

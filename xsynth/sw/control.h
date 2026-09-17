@@ -27,17 +27,20 @@
 
 #include "protocol.h"
 
-/* How many scheduled events fit in the ring buffer. Each costs twelve bytes of
-   BSRAM, so this is 3 KB of the eight the SoC has -- about two minutes of
-   music at four notes a second, and a host streams anyway rather than filling
-   it in one go. Five hundred and twelve overflows the region and three hundred
-   and eighty-four would leave four hundred bytes of stack under a call chain
-   that wants more than that.
+/* The schedule is a ring of SCHEDULE_ENTRIES events, the number coming from
+   protocol.h because the host streams against it: past that many outstanding
+   events the firmware drops them, silently, so a host that does not know the
+   number cannot pace itself. Each event costs twelve bytes of BSRAM, so 256 is
+   3 KB of the eight the SoC has -- about two minutes of music at four notes a
+   second, and a host streams anyway rather than filling it in one go. Five
+   hundred and twelve overflows the region and three hundred and eighty-four
+   would leave four hundred bytes of stack under a call chain that wants more
+   than that.
 
-   It has to be a power of two: the ring wraps with a mask, because RV32I has no
-   divider, `-nostdlib` means there is no `__umodsi3` to call, and a division in
-   the dispatch path would be the only thing in the firmware that could. */
-#define SCHEDULE_ENTRIES 256
+   The size has to be a power of two: the ring wraps with a mask, because RV32I
+   has no divider, `-nostdlib` means there is no `__umodsi3` to call, and a
+   division in the dispatch path would be the only thing in the firmware that
+   could. */
 #define SCHEDULE_MASK (SCHEDULE_ENTRIES - 1)
 
 #if (SCHEDULE_ENTRIES & SCHEDULE_MASK) != 0

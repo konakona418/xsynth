@@ -6,6 +6,7 @@ sends and the way it decodes replies are both pinned down without a board.
 
 import pytest
 
+from xsynth.host import client as host_client
 from xsynth.host.client import ENV_TOP, Status, XsynthClient
 from xsynth.hdl.audio import PEAK, phase_step
 from xsynth.hdl.voice import WAVES
@@ -414,3 +415,48 @@ def test_an_envelope_with_every_stage_is_four_commands_in_two_frames():
 
     written = bytes(fake.written)
     assert written.count(b"\xaa\x55") == 2
+
+
+class _Port:
+    """What `list_ports.comports()` hands back, cut down to what find_port reads."""
+
+    def __init__(self, device, vid=None, interface=None):
+        self.device = device
+        self.vid = vid
+        self.interface = interface
+
+
+def _ports(monkeypatch, *ports):
+    monkeypatch.setattr(host_client.list_ports, "comports", lambda: list(ports))
+
+
+def test_the_jtag_channel_is_not_mistaken_for_the_control_uart(monkeypatch):
+    """An FT2232 debugger offers two USB serial ports for the one board, and
+    only channel B is a UART. Only channel A says what it is, so the one that
+    announces itself as JTAG is the one to skip -- otherwise every command
+    would need --port, which is a poor way to treat the common case."""
+    _ports(monkeypatch,
+           _Port("/dev/ttyUSB0", vid=0x0403, interface="JTAG Debugger"),
+           _Port("/dev/ttyUSB1", vid=0x0403))
+    assert host_client.find_port() == "/dev/ttyUSB1"
+
+
+def test_a_lone_usb_port_is_taken_whatever_it_calls_itself(monkeypatch):
+    _ports(monkeypatch,
+           _Port("/dev/ttyUSB0", vid=0x0403, interface="JTAG Debugger"))
+    assert host_client.find_port() == "/dev/ttyUSB0"
+
+
+def test_two_ports_that_are_both_uart_ask_for_a_choice(monkeypatch):
+    _ports(monkeypatch,
+           _Port("/dev/ttyUSB0", vid=0x0403),
+           _Port("/dev/ttyUSB1", vid=0x0403))
+    with pytest.raises(SystemExit, match="--port"):
+        host_client.find_port()
+
+
+def test_a_motherboard_uart_is_passed_over_for_a_usb_one(monkeypatch):
+    _ports(monkeypatch,
+           _Port("/dev/ttyS0"),
+           _Port("/dev/ttyUSB1", vid=0x0403))
+    assert host_client.find_port() == "/dev/ttyUSB1"

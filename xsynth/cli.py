@@ -6,12 +6,15 @@ Usage examples::
     uv run xsynth build --phase 2
     uv run xsynth host  status
     uv run xsynth host  note-on --hz 440 --wave saw
+    uv run xsynth play  song.txt
+    uv run xsynth listen 5
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 
@@ -232,6 +235,43 @@ def _resolve(args) -> None:
             )
 
 
+def _run_play(args) -> int:
+    from xsynth.host import XsynthClient
+    from xsynth.host.player import play
+    from xsynth.host.score import load_score
+
+    score = load_score(args.score)
+    if not score.notes:
+        raise SystemExit(f"{args.score} has no notes in it")
+
+    with XsynthClient(args.port, baud=args.baud, timeout=args.timeout) as client:
+        print(f"port {client.port} at {client.baud} baud")
+        print(f"{len(score.notes)} notes over {score.duration:.2f} s")
+        started = time.monotonic()
+        play(client, score)
+        print(f"played in {time.monotonic() - started:.2f} s")
+    return 0
+
+
+def _run_listen(args) -> int:
+    from xsynth.host.listen import listen, listing
+
+    if args.list_sources:
+        for handle, name in listing():
+            print(f"{handle}  {name}")
+        return 0
+    if args.seconds is None:
+        raise SystemExit("how long should it record? (--list shows the sources)")
+    if args.source is None:
+        raise SystemExit(
+            "which source? `xsynth listen --list` shows them, then pass "
+            "--source"
+        )
+    listen(args.seconds, source=args.source, output=args.output,
+           play=not args.no_play, report=print)
+    return 0
+
+
 def _run_host(args) -> int:
     from xsynth.host import XsynthClient
 
@@ -363,6 +403,30 @@ def main(argv: list[str] | None = None) -> int:
     analyse.add_argument("--channel", type=int, default=0)
     analyse.add_argument("--harmonics", type=int, default=8)
 
+    play = sub.add_parser(
+        "play", help="play a score file through the board"
+    )
+    play.add_argument("score", help="a score: 'time pitch duration', one note "
+                                    "a line, with optional settings above")
+    play.add_argument("--port", default=None,
+                      help="serial port (default: the only USB serial port)")
+    play.add_argument("--baud", type=int, default=115_200)
+    play.add_argument("--timeout", type=float, default=1.0)
+
+    listen = sub.add_parser(
+        "listen", help="record what the board is playing and play it back"
+    )
+    listen.add_argument("seconds", type=float, nargs="?",
+                        help="how long to record")
+    listen.add_argument("--list", dest="list_sources", action="store_true",
+                        help="print the capture sources and their handles")
+    listen.add_argument("--source", default=None,
+                        help="which source, by handle from --list")
+    listen.add_argument("--output", default=None,
+                        help="where to keep the recording")
+    listen.add_argument("--no-play", action="store_true",
+                        help="record without playing it back")
+
     args = parser.parse_args(argv)
 
     if args.command == "sim":
@@ -390,6 +454,10 @@ def main(argv: list[str] | None = None) -> int:
 
         print(analyse(args.wav, channel=args.channel,
                       harmonics=args.harmonics).describe())
+    elif args.command == "play":
+        return _run_play(args)
+    elif args.command == "listen":
+        return _run_listen(args)
     elif args.command == "program":
         raise SystemExit("`xsynth program` is not implemented yet")
     else:  # pragma: no cover - argparse guarantees a known command
