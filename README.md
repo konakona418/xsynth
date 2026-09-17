@@ -205,6 +205,62 @@ Build artifacts land in `build/`. `build/top.tim` is the nextpnr timing and
 utilisation report. A phase 3 build takes roughly six minutes: the CPU doubles
 the LUT count and nextpnr's placer is superlinear in density.
 
+## From a blank board to music
+
+Four steps. The first two put a design on the FPGA, the third puts a program in
+the soft core, and the fourth plays something.
+
+**1. Build and program the FPGA.** `--no-flash` writes the configuration to
+SRAM, which is volatile and survives until the board loses power; without it the
+bitstream goes to SPI flash and the board configures itself at power-up:
+
+```bash
+uv run xsynth build --phase 3 --no-flash    # SRAM: gone at power-off
+uv run xsynth build --phase 3               # flash: boots itself
+```
+
+`--no-flash` is the right default while the design is changing, because a power
+cycle is a cheaper reset than a flash erase. Both take about six minutes,
+because the soft core roughly doubles the LUT count.
+
+**2. Check that it is alive.** The debugger presents two USB serial ports and
+the client picks the UART out of them; `status` should report `locked True` and
+`version 4`:
+
+```bash
+uv run xsynth host status
+```
+
+**3. Upload the firmware.** This is a separate step, and the reason for it is
+worth knowing: **the firmware is not in the bitstream.** The soft core's program
+memory is BRAM, and BRAM comes up empty, so a freshly configured board has a CPU
+with nothing to run. The image is built with clang and written into that memory
+over the same UART everything else uses:
+
+```bash
+uv run xsynth host load            # builds the bundled firmware and runs it
+uv run xsynth host load image.bin  # or a flat binary of your own
+```
+
+`cpu_stat` reading `0x5853594e` ("XSYN") means the firmware is the one talking.
+**This has to be repeated after every power cycle**, whether or not the
+bitstream came from flash -- flash holds the configuration, not the program.
+
+**4. Play.** A score is a text file, one note to a line; `scores/` has a few and
+says where they came from:
+
+```bash
+uv run xsynth play scores/twinkle.txt
+```
+
+Then listen to what the HDMI sink actually received, rather than trusting the
+design:
+
+```bash
+uv run xsynth listen --list                 # the capture sources, with handles
+uv run xsynth listen 30 --source <handle>   # record 30 s and play it back
+```
+
 ## The control protocol
 
 `xsynth/protocol.py` is the single definition, shared by the FPGA and the host
@@ -282,6 +338,7 @@ xsynth/
   sw/              RISC-V firmware: main.c is the wiring, control.{h,c} is
                    the allocator and the schedule and touches no register
   third_party/     vendored HDL (hdl-util/hdmi, YosysHQ/picorv32)
+scores/            example scores, and where they came from
 tests/             pytest suite
 ```
 
