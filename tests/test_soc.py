@@ -54,11 +54,20 @@ def test_the_reported_cycle_count_is_plausible():
 
 
 def test_the_real_firmware_runs():
-    """End to end: clang output, through the loader, executed by the CPU."""
+    """End to end: clang output, through the loader, executed by the CPU.
+
+    The firmware zeroes its own BSS before it reaches `main`, and the schedule
+    ring is most of a kiloword of it, so the boot is a few thousand cycles
+    rather than a handful.
+    """
     image = build_firmware()
     program = [
         int.from_bytes(image[start:start + 4].ljust(4, b"\0"), "little")
         for start in range(0, len(image), 4)
     ]
-    result = simulate(program, condition=f"status === 32'h{FIRMWARE_MAGIC:08X}")
+    result = simulate(
+        program,
+        condition=f"status === 32'h{FIRMWARE_MAGIC:08X}",
+        timeout=20_000,
+    )
     assert "PASS" in result.output

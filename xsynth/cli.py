@@ -77,33 +77,47 @@ def _add_host(parser: argparse.ArgumentParser) -> None:
     load.add_argument("--no-run", action="store_true",
                       help="load without letting the CPU out of reset")
 
-    note_on = actions.add_parser("note-on", help="start a note")
+    note_on = actions.add_parser(
+        "note-on", help="start a note; with no --voice the firmware picks one")
     note_on.add_argument("--hz", type=float, default=440.0)
     note_on.add_argument("--note", type=int, default=None,
                          help="MIDI note number, overriding --hz")
-    note_on.add_argument("--wave", choices=WAVES, default=None)
-    note_on.add_argument("--voice", type=int, default=0,
-                         help="which of the eight voices to use")
+    note_on.add_argument("--wave", choices=WAVES, default=None,
+                         help="select a waveform first; with no --voice this "
+                              "reaches every voice, not just the new note")
+    note_on.add_argument("--voice", type=int, default=None,
+                         help="pin one of the eight voices instead of asking")
     note_on.add_argument("--delay", type=int, default=0)
+    _add_at(note_on)
 
-    note_off = actions.add_parser("note-off", help="stop the note")
-    note_off.add_argument("--voice", type=int, default=0)
+    note_off = actions.add_parser(
+        "note-off", help="stop a note by pitch, or a voice by number")
+    note_off.add_argument("--hz", type=float, default=None,
+                          help="the pitch the note was started at; required "
+                               "unless --voice names one")
+    note_off.add_argument("--note", type=int, default=None,
+                          help="MIDI note number, overriding --hz")
+    note_off.add_argument("--voice", type=int, default=None)
     note_off.add_argument("--delay", type=int, default=0)
+    _add_at(note_off)
 
     freq = actions.add_parser("freq", help="change the frequency")
     freq.add_argument("hz", type=float)
-    freq.add_argument("--voice", type=int, default=0)
+    _add_target(freq)
     freq.add_argument("--delay", type=int, default=0)
+    _add_at(freq)
 
     wave = actions.add_parser("wave", help="select a waveform")
     wave.add_argument("name", choices=WAVES)
-    wave.add_argument("--voice", type=int, default=0)
+    _add_target(wave)
     wave.add_argument("--delay", type=int, default=0)
+    _add_at(wave)
 
     amp = actions.add_parser("amp", help="set the note level, 0.0 to 1.0")
     amp.add_argument("fraction", type=float)
-    amp.add_argument("--voice", type=int, default=0)
+    _add_target(amp)
     amp.add_argument("--delay", type=int, default=0)
+    _add_at(amp)
 
     envelope = actions.add_parser(
         "envelope", help="set the shared ADSR; stages left out are untouched")
@@ -114,11 +128,77 @@ def _add_host(parser: argparse.ArgumentParser) -> None:
                           help="fraction of the note's own peak, 0.0 to 1.0")
     envelope.add_argument("--release", type=float, default=None)
     envelope.add_argument("--delay", type=int, default=0)
+    _add_at(envelope)
 
     master = actions.add_parser(
         "master", help="scale the whole mix, 0.0 to 1.0")
     master.add_argument("fraction", type=float)
     master.add_argument("--delay", type=int, default=0)
+    _add_at(master)
+
+    actions.add_parser(
+        "clear-schedule",
+        help="drop the events waiting to play and go back to immediate")
+
+    actions.add_parser(
+        "anchor",
+        help="take the sample count and make every later command relative "
+             "to it")
+
+
+def _add_at(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--at", type=int, default=None, metavar="SAMPLE",
+        help="when to apply this, as an absolute 48 kHz sample count; "
+             "`status` prints the current one")
+
+
+def _add_target(parser: argparse.ArgumentParser) -> None:
+    """One voice by number, or every voice. There is no default: naming no
+    voice on these would have to mean one or the other, and guessing wrong is
+    a silent change to a note the user did not mean to touch."""
+    parser.add_argument("--voice", type=int, default=None)
+    parser.add_argument("--all", action="store_true",
+                        help="every voice, not just one")
+
+
+def _checked_voice(voice: int) -> int:
+    from xsynth.hdl.voice import VOICES
+    from xsynth.protocol import VOICE_ANY
+
+    if voice != VOICE_ANY and not 0 <= voice < VOICES:
+        raise SystemExit(f"there is no voice {voice}; there are {VOICES}")
+    return voice
+
+
+def _voice(args) -> int:
+    """A note names no voice unless it is told to."""
+    from xsynth.protocol import VOICE_ANY
+
+    return VOICE_ANY if args.voice is None else _checked_voice(args.voice)
+
+
+def _target(args) -> int:
+    from xsynth.protocol import VOICE_ANY
+
+    if args.all and args.voice is not None:
+        raise SystemExit("--voice and --all are opposites; pick one")
+    if not args.all and args.voice is None:
+        raise SystemExit(f"{args.action}: name a voice with --voice N, or "
+                         f"--all for every one")
+    return VOICE_ANY if args.all else _checked_voice(args.voice)
+
+
+def _describe_voice(voice: int) -> str:
+    from xsynth.protocol import VOICE_ANY
+
+    return "every voice" if voice == VOICE_ANY else f"voice {voice}"
+
+
+def _schedule(client, args) -> None:
+    """An anchor has to go out before the command it applies to."""
+    if getattr(args, "at", None) is not None:
+        client.anchor(args.at)
 
 
 def _note_to_hz(note: int) -> float:
@@ -133,8 +213,29 @@ def _describe_cpu(status) -> str:
     return "running" if status.running else "stopped"
 
 
+def _resolve(args) -> None:
+    """Settle the voice arguments before the port is opened, so a mistake on
+    the command line is reported as one instead of as a serial problem."""
+    from xsynth.protocol import VOICE_ANY
+
+    if args.action in ("freq", "wave", "amp"):
+        args.voice = _target(args)
+    elif args.action in ("note-on", "note-off"):
+        args.voice = _voice(args)
+
+    if args.action == "note-off":
+        named = args.hz is not None or args.note is not None
+        if not named and args.voice == VOICE_ANY:
+            raise SystemExit(
+                "note-off: give the pitch with --hz or --note, or name a "
+                "voice with --voice"
+            )
+
+
 def _run_host(args) -> int:
     from xsynth.host import XsynthClient
+
+    _resolve(args)
 
     with XsynthClient(args.port, baud=args.baud, timeout=args.timeout) as client:
         print(f"port {client.port} at {client.baud} baud")
@@ -172,22 +273,29 @@ def _run_host(args) -> int:
             print("reset sent")
         elif args.action == "note-on":
             hz = _note_to_hz(args.note) if args.note is not None else args.hz
+            _schedule(client, args)
             client.note_on(hz, voice=args.voice, wave=args.wave,
                            delay=args.delay)
-            print(f"note on at {hz:.2f} Hz, voice {args.voice}")
+            print(f"note on at {hz:.2f} Hz, {_describe_voice(args.voice)}")
         elif args.action == "note-off":
-            client.note_off(voice=args.voice, delay=args.delay)
-            print(f"note off, voice {args.voice}")
+            hz = _note_to_hz(args.note) if args.note is not None else args.hz
+            _schedule(client, args)
+            client.note_off(hz, voice=args.voice, delay=args.delay)
+            print(f"note off, {_describe_voice(args.voice)}")
         elif args.action == "freq":
+            _schedule(client, args)
             client.set_freq(args.hz, voice=args.voice, delay=args.delay)
-            print(f"frequency {args.hz:.2f} Hz, voice {args.voice}")
+            print(f"frequency {args.hz:.2f} Hz, {_describe_voice(args.voice)}")
         elif args.action == "wave":
+            _schedule(client, args)
             client.set_wave(args.name, voice=args.voice, delay=args.delay)
-            print(f"waveform {args.name}, voice {args.voice}")
+            print(f"waveform {args.name}, {_describe_voice(args.voice)}")
         elif args.action == "amp":
+            _schedule(client, args)
             client.set_amp(args.fraction, voice=args.voice, delay=args.delay)
-            print(f"level {args.fraction}, voice {args.voice}")
+            print(f"level {args.fraction}, {_describe_voice(args.voice)}")
         elif args.action == "envelope":
+            _schedule(client, args)
             client.set_envelope(
                 attack=args.attack, decay=args.decay, sustain=args.sustain,
                 release=args.release, delay=args.delay,
@@ -201,8 +309,16 @@ def _run_host(args) -> int:
             print("envelope " + " ".join(
                 f"{name}={value}" for name, value in stages.items()))
         elif args.action == "master":
+            _schedule(client, args)
             client.set_master(args.fraction, delay=args.delay)
             print(f"master {args.fraction}")
+        elif args.action == "clear-schedule":
+            client.clear_schedule()
+            print("schedule cleared; later commands apply at once again")
+        elif args.action == "anchor":
+            sample = client.now()
+            client.anchor(sample)
+            print(f"anchored at {sample}; later commands are relative to it")
         else:  # pragma: no cover - argparse guarantees a known action
             raise SystemExit(f"unknown host action {args.action!r}")
     return 0

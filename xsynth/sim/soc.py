@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from xsynth.hdl.soc import PICORV32_SOURCE, SoC
+from xsynth.hdl.soc import DEFAULT_MEM_WORDS, PICORV32_SOURCE, SoC
 from xsynth.sim.verilog import run
 
 # The tracer bullet, hand assembled: write 0x12345678 to the status register,
@@ -44,7 +44,10 @@ HALT_PROGRAM = (
     0x0000006F,
 )
 
-DEFAULT_MEM_WORDS = 256
+# The same memory the board has, so that a program which outgrows the sim has
+# outgrown the hardware too rather than only the testbench. `load_addr` is as
+# wide as the memory needs, which is what makes an oversized image wrap and
+# overwrite its own start instead of failing loudly.
 DEFAULT_TIMEOUT = 500
 
 
@@ -108,7 +111,7 @@ module testbench;
         for (i = 0; i < {timeout}; i = i + 1) begin
             @(negedge clk);
             if (trap) begin
-                $fatal(1, "FAIL: the cpu trapped");
+                $fatal(1, "FAIL: the cpu trapped; status=%h counter=%0d", status, counter);
             end
             if ({condition}) begin
                 $display("PASS after %0d cycles: status=%h halted=%b counter=%0d",

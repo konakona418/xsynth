@@ -60,6 +60,21 @@ OP_SET_SUSTAIN = 0x09
 OP_SET_RELEASE = 0x0A
 OP_SET_MASTER = 0x0B
 
+# Phase 4b. These two are addressed to the *firmware*, not the engine, and are
+# never pushed into the command FIFO. The anchor exists so that a host can
+# express absolute times without a second packet type: the mailbox forwards
+# exactly one, and the engine's own scheduler already counts samples between
+# relative delays, so an anchor plus accumulating delays is the same idea with
+# a known origin. It also lifts the 16-bit delay ceiling, which is 1.365
+# seconds: a longer gap is a new anchor rather than an unrepresentable number.
+OP_SCHEDULE_AT = 0x0C
+OP_CLEAR_SCHEDULE = 0x0D
+
+# The voice field of a command that names no voice, asking the firmware to pick
+# one. The engine ignores any voice index past its own count, so this value
+# costs nothing and cannot collide with a real voice.
+VOICE_ANY = 0xFF
+
 OP_NAMES = {
     OP_NOTE_ON: "note_on",
     OP_NOTE_OFF: "note_off",
@@ -72,12 +87,17 @@ OP_NAMES = {
     OP_SET_SUSTAIN: "set_sustain",
     OP_SET_RELEASE: "set_release",
     OP_SET_MASTER: "set_master",
+    OP_SCHEDULE_AT: "schedule_at",
+    OP_CLEAR_SCHEDULE: "clear_schedule",
 }
 
 # The opcodes that name a voice, and so have to carry a valid voice index.
 PER_VOICE_OPS = frozenset({
     OP_NOTE_ON, OP_NOTE_OFF, OP_SET_FREQ, OP_SET_WAVE, OP_SET_AMP,
 })
+
+# The opcodes the firmware acts on itself rather than forwarding.
+FIRMWARE_OPS = frozenset({OP_SCHEDULE_AT, OP_CLEAR_SCHEDULE})
 
 WAVES = ("sine", "saw", "square", "triangle")
 WAVE_INDEX = {name: index for index, name in enumerate(WAVES)}
@@ -110,7 +130,7 @@ CPU_RUNNING = 0
 CPU_HALTED = 1
 CPU_TRAP = 2
 
-VERSION = 3
+VERSION = 4
 
 # A status reply is fixed width. Offsets are into the reply's arguments, that
 # is, the payload without its leading packet-type byte.

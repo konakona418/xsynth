@@ -463,6 +463,46 @@ sequencing**。band-limited wavetable 推迟到 Phase 6 之后——那时有硬
 
 固件目前只做一对一转发，不做任何决策。
 
+#### Phase 4b 实际结果（已构建、已测试，尚未上板）
+
+全部是固件工作：mailbox、命令 FIFO、`CommandScheduler`、`REG_SAMPLES` 都已具备，
+所以**零硬件改动、零 build**。Phase 5 随之关闭。
+
+- **分配器**：`VOICE_ANY = 0xFF`。三态影子（idle / sounding / releasing），
+  优先 idle，否则抢进入 release 最久的，否则抢最早 note-on 的。`NOTE_OFF` 带
+  `VOICE_ANY` 时 `value` 是音高步进，释放最早匹配的 voice——host 因此永远不必
+  知道它拿到了哪个 voice。其余 per-voice opcode 上 `VOICE_ANY` 意为**全部
+  voice**，因为「哪个 voice」和「新的值」会争同一个 `value` 字段。
+- **调度**：`OP_SCHEDULE_AT` 重设固件的时间累加器，其后的命令按 `delay` 累加成
+  绝对时刻，存在 BSRAM 的 256 条环形缓冲里。派发时 `delay = T - max(T_prev, now)`：
+  链条还在飞就精确到 sample，已排空就以 ±2 sample 的取指不确定性重新锚定。
+  `OP_CLEAR_SCHEDULE` 既丢待播事件**也解除锚定**——否则锚点会黏到固件生命
+  周期结束，再也回不到「立即」模式。
+
+**固件拆成可测的两半**：`xsynth/sw/control.{h,c}` 是分配器 + 环形缓冲，**不碰
+任何寄存器**；`xsynth/sw/main.c` 只是接线。`tests/test_control.py` 用**本机
+编译器**编 `control.c`，通过 ctypes 驱动——**34 个测试不到一秒**，所以回绕、
+满缓冲、抢占顺序、迟到事件这些边界才真正测得动。iverilog 测试保留下来做它们
+擅长的事：证明接线是对的。
+
+实测：**代码 1960 字节、.bss 3196 字节**，占 8 KB 的 63%，栈还剩约 3 KB。
+
+三个踩到的坑（已写入 HANDOFF）：
+
+1. `% 384` 需要 `__umodsi3`，而 `-nostdlib` 不链接运行时库，所以环形缓冲**必须
+   是 2 的幂**并用掩码回绕。这也是它最终是 256 条而不是 384 的原因：512 条直接
+   溢出内存区。
+2. 两个仿真器各自以为 SoC 有 256 和 1024 字，而板子是 2048 字。固件长大后就装
+   不下仿真器了，**loader 地址回绕**，镜像尾部覆盖了自己的开头，CPU 在垃圾上
+   trap。现在两者都从 `xsynth.hdl.soc` 取大小。
+3. 用 `-Os` 而不是 `-O2`：内存才是约束，而 `-Oz` 要一个 freestanding 构建没有
+   的 `memcpy`。`-Os` 把代码从 3056 字节降到 1960。
+
+#### Phase 5：已由 4b 关闭
+
+三个工作项里，「单调递增 sample counter」和「synth 端只在目标 sample 应用事件」
+早在 Phase 2 就完成，「绝对 timestamp」在 4b 完成。无剩余工作。
+
 ### Phase 5：Sample-accurate sequencer
 
 工作项：

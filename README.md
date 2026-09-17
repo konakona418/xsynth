@@ -22,13 +22,15 @@ uploads — including the one that owns the command path.
 | 3a | PicoRV32 SoC + program upload | built, verified on hardware |
 | 3b | PCPI, firmware owns the command path | built, verified on hardware |
 | 4a | 8-voice engine, ADSR, saturating mix | built and simulated |
-| 4b | Firmware voice allocation + sequencing | not started |
-| 5 | Sample-accurate sequencer | not started |
+| 4b | Firmware voice allocation + sequencing | built and tested |
+| 5 | Sample-accurate sequencer | closed by 4b |
 | 6 | Xsynth ISA + LLVM fork | not started |
 
 Phase 4 was planned with a filter; it was dropped in favour of band-limited
 wavetables, which fix the aliasing at its source rather than after it. PLAN.md
-records the reasoning.
+records the reasoning. Phase 5's other two work items — a monotonic sample
+counter and applying an event on its target sample — were finished as a side
+effect of Phase 2, so absolute timestamps in 4b were all that was left.
 
 ## Toolchain
 
@@ -69,16 +71,37 @@ uv run xsynth host note-on --hz 440 --wave saw
 uv run xsynth host note-off
 ```
 
-The engine has eight voices. A host can name one, or leave it to the firmware
-once the allocator exists; until then, `--voice` picks it:
+The engine has eight voices and the firmware allocates them. A note names no
+voice unless it is told to, and a note-off identifies its note by the pitch it
+was started at, so the host never has to learn which voice it got:
 
 ```bash
 uv run xsynth host envelope --attack 0.01 --decay 0.2 --sustain 0.5 --release 0.4
 uv run xsynth host master 0.25
-uv run xsynth host note-on --hz 440 --voice 0
-uv run xsynth host note-on --hz 554 --voice 1
-uv run xsynth host note-off --voice 0
+uv run xsynth host note-on --note 60 --wave saw
+uv run xsynth host note-on --note 64
+uv run xsynth host note-off --note 60
 ```
+
+`--voice N` pins a voice instead of asking, and `freq`, `wave` and `amp` want
+either that or `--all`, because on those "no voice" would have to mean one or
+the other and guessing wrong silently changes a note you did not mean to touch.
+
+For anything ahead of time, `status` prints the 48 kHz sample counter and `--at`
+places a command at an absolute sample:
+
+```bash
+uv run xsynth host status                      # note the samples line
+uv run xsynth host note-on --note 60 --at 1500000
+uv run xsynth host note-off --note 60 --at 1524000
+uv run xsynth host clear-schedule              # drop what is pending
+```
+
+`--delay N` measures from the previous command instead, and the two compose:
+an anchor plus accumulating delays is how a whole melody goes out in one burst
+without the host tracking which voice anything landed on. `anchor` takes the
+current sample count and makes everything after it relative to that, for a host
+that would rather not do the arithmetic.
 
 Phase 3 also runs a soft core. The firmware is built with clang (the LLVM
 `riscv32` target) and uploaded over the same UART:
@@ -148,6 +171,21 @@ envelope settings are global — one set of rates shared by every voice, as on
 almost every synth — while the envelope's level and stage are per voice.
 `SET_AMP` is the note's own level, which scales how far its attack travels.
 
+`voice = 0xFF` means "firmware, you decide". On `NOTE_ON` that is an allocation;
+on `NOTE_OFF` the `value` field carries the note's phase increment and the
+firmware releases the oldest voice matching it; on the other three it means
+*every* voice, since a note can be placed by its increment but a frequency
+cannot — "which voice" and "the new value" would both want the value field.
+
+Two opcodes are addressed to the firmware rather than the engine, and never
+reach the command FIFO. `OP_SCHEDULE_AT` re-anchors the firmware's time
+accumulator, so the commands after it accumulate their `delay` fields into
+absolute sample times; that is how a host says "at sample 1500000" without a
+second packet type, and how it reaches past the 16-bit delay's 1.365 seconds.
+`OP_CLEAR_SCHEDULE` drops the events waiting to play and goes back to immediate —
+the notes already sounding are left alone, and so is the allocator's knowledge
+of them, because a later note-off still has to find its voice.
+
 `OP_SET_ATTACK`, `OP_SET_DECAY` and `OP_SET_RELEASE` carry a 24-bit per-sample
 increment, not a time; `XsynthClient.envelope_rate` converts seconds into one,
 because that arithmetic belongs where floating point exists. `OP_SET_MASTER`
@@ -178,7 +216,8 @@ xsynth/
   platform/        board definitions, Gowin primitives, toolchain patches
   sim/             simulation benches (Amaranth, and iverilog for the CPU)
   sv/              Xsynth-authored SystemVerilog glue
-  sw/              RISC-V firmware sources
+  sw/              RISC-V firmware: main.c is the wiring, control.{h,c} is
+                   the allocator and the schedule and touches no register
   third_party/     vendored HDL (hdl-util/hdmi, YosysHQ/picorv32)
 tests/             pytest suite
 ```

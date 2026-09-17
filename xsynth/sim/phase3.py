@@ -33,7 +33,9 @@ CLOCK_HALF_NS = 5
 STROBE_PERIOD = 32
 
 DEFAULT_TIMEOUT = 20_000
-DEFAULT_MEM_WORDS = 1024
+# The same memory the board has. The firmware's schedule alone is three
+# kilobytes of it, so a smaller sim is a sim the firmware cannot fit in.
+DEFAULT_MEM_WORDS = 2048
 
 
 class Phase3Harness(Elaboratable):
@@ -156,7 +158,8 @@ module testbench;
         for (i = 0; i < {timeout}; i = i + 1) begin
             @(negedge clk);
             if (trap) begin
-                $fatal(1, "FAIL: the cpu trapped");
+                $fatal(1, "FAIL: the cpu trapped; status=%h counter=%0d commands=%0d",
+                       status, counter, commands);
             end
             if ({condition}) begin
                 $display("PASS after %0d cycles: status=%h amp=%h fifo=%0d commands=%0d frames=%0d",

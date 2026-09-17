@@ -13,8 +13,10 @@ from xsynth.protocol import (
     CPU_RUNNING,
     FLAG_CRC_ERROR,
     FLAG_LOCKED,
+    OP_CLEAR_SCHEDULE,
     OP_NOTE_ON,
     OP_NOTE_OFF,
+    OP_SCHEDULE_AT,
     OP_SET_ATTACK,
     OP_SET_DECAY,
     OP_SET_MASTER,
@@ -25,6 +27,7 @@ from xsynth.protocol import (
     PKT_PONG,
     PKT_STATUS,
     PKT_STATUS_REPLY,
+    VOICE_ANY,
     Command,
     encode_commands,
     encode_frame,
@@ -68,10 +71,87 @@ def test_note_on_frames_the_wave_then_the_note():
 
     step = phase_step(440.0, 48_000)
     expected = encode_commands([
-        Command(OP_SET_WAVE, value=WAVES.index("saw")),
-        Command(OP_NOTE_ON, value=step),
+        Command(OP_SET_WAVE, voice=VOICE_ANY, value=WAVES.index("saw")),
+        Command(OP_NOTE_ON, voice=VOICE_ANY, value=step),
     ])
     assert bytes(fake.written) == expected
+
+
+def test_a_note_with_no_voice_asks_the_firmware_to_pick_one():
+    fake = _FakeSerial()
+    client = XsynthClient(transport=fake)
+    client.note_on(440.0)
+    client.note_off(440.0)
+
+    step = phase_step(440.0, 48_000)
+    assert bytes(fake.written) == (
+        encode_commands([Command(OP_NOTE_ON, voice=VOICE_ANY, value=step)])
+        + encode_commands([
+            Command(OP_NOTE_OFF, voice=VOICE_ANY, value=step),
+        ])
+    )
+
+
+def test_a_note_off_by_pitch_carries_the_step_it_was_started_with():
+    """The note's identity is the increment, so this is what the firmware
+    matches on -- and the host never learns which voice it got."""
+    fake = _FakeSerial()
+    client = XsynthClient(transport=fake)
+    client.note_on(554.37)
+    client.note_off(554.37)
+
+    step = phase_step(554.37, 48_000)
+    payload = bytes(fake.written)
+    assert payload.count(step.to_bytes(4, "little")) == 2
+
+
+def test_a_note_off_with_neither_a_pitch_nor_a_voice_is_refused():
+    fake = _FakeSerial()
+    client = XsynthClient(transport=fake)
+    with pytest.raises(ValueError, match="needs the hz"):
+        client.note_off()
+
+
+def test_naming_no_voice_on_a_wave_reaches_every_voice():
+    fake = _FakeSerial()
+    client = XsynthClient(transport=fake)
+    client.set_wave("saw")
+
+    assert bytes(fake.written) == encode_commands([
+        Command(OP_SET_WAVE, voice=VOICE_ANY, value=WAVES.index("saw")),
+    ])
+
+
+def test_an_anchor_precedes_the_command_it_applies_to():
+    fake = _FakeSerial()
+    client = XsynthClient(transport=fake)
+    client.anchor(250_000)
+    client.note_on(440.0, delay=4800)
+
+    step = phase_step(440.0, 48_000)
+    assert bytes(fake.written) == (
+        encode_commands([Command(OP_SCHEDULE_AT, value=250_000)])
+        + encode_commands([
+            Command(OP_NOTE_ON, voice=VOICE_ANY, value=step, delay=4800),
+        ])
+    )
+
+
+def test_clearing_the_schedule_is_its_own_command():
+    fake = _FakeSerial()
+    client = XsynthClient(transport=fake)
+    client.clear_schedule()
+    assert bytes(fake.written) == encode_commands([Command(OP_CLEAR_SCHEDULE)])
+
+
+def test_now_reads_the_sample_counter_out_of_a_status_reply():
+    payload = bytearray([PKT_STATUS_REPLY]) + bytearray(16)
+    payload[1 + 4:1 + 8] = (123_456).to_bytes(4, "little")
+    fake = _FakeSerial(encode_frame(bytes(payload)))
+
+    client = XsynthClient(transport=fake)
+    assert client.now() == 123_456
+    assert bytes(fake.written) == encode_frame(bytes([PKT_STATUS]))
 
 
 def test_commands_can_be_batched_with_delays():
@@ -243,3 +323,72 @@ def test_a_level_outside_the_unit_range_is_rejected():
             client.set_master(fraction)
         with pytest.raises(ValueError):
             client.level_for(fraction)
+
+
+# --- how the command line settles a voice ---------------------------------
+#
+# `freq`, `wave` and `amp` have no default, because naming no voice on those
+# would have to mean one voice or every voice and guessing wrong silently
+# changes a note the user did not mean to touch. The decision is settled before
+# the serial port is opened, so a mistake is reported as one.
+
+
+def _args(**kwargs):
+    from argparse import Namespace
+
+    defaults = {"action": "wave", "voice": None, "all": False, "hz": None,
+                "note": None}
+    defaults.update(kwargs)
+    return Namespace(**defaults)
+
+
+def test_a_target_needs_a_voice_or_all():
+    from xsynth.cli import _resolve
+
+    with pytest.raises(SystemExit, match="--voice N, or --all"):
+        _resolve(_args(action="wave"))
+
+    args = _args(action="wave", all=True)
+    _resolve(args)
+    assert args.voice == VOICE_ANY
+
+    args = _args(action="wave", voice=3)
+    _resolve(args)
+    assert args.voice == 3
+
+
+def test_a_target_cannot_be_a_voice_and_all_at_once():
+    from xsynth.cli import _resolve
+
+    with pytest.raises(SystemExit, match="opposites"):
+        _resolve(_args(action="wave", voice=3, all=True))
+
+
+def test_a_voice_that_does_not_exist_is_refused():
+    from xsynth.cli import _resolve
+
+    with pytest.raises(SystemExit, match="no voice 9"):
+        _resolve(_args(action="wave", voice=9))
+
+
+def test_a_note_names_no_voice_unless_it_is_told_to():
+    from xsynth.cli import _resolve
+
+    args = _args(action="note-on")
+    _resolve(args)
+    assert args.voice == VOICE_ANY
+
+
+def test_a_note_off_needs_a_pitch_or_a_voice():
+    from xsynth.cli import _resolve
+
+    with pytest.raises(SystemExit, match="give the pitch"):
+        _resolve(_args(action="note-off"))
+
+    args = _args(action="note-off", hz=440.0)
+    _resolve(args)
+    assert args.voice == VOICE_ANY
+
+    args = _args(action="note-off", voice=2)
+    _resolve(args)
+    assert args.voice == 2

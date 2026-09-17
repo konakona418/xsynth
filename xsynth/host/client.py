@@ -33,9 +33,11 @@ from xsynth.protocol import (
     FLAG_LOCKED,
     FLAG_OVERFLOW,
     FLAG_UNKNOWN_PACKET,
+    OP_CLEAR_SCHEDULE,
     OP_NOTE_OFF,
     OP_NOTE_ON,
     OP_RESET,
+    OP_SCHEDULE_AT,
     OP_SET_AMP,
     OP_SET_ATTACK,
     OP_SET_DECAY,
@@ -54,6 +56,7 @@ from xsynth.protocol import (
     STATUS_CPU_FLAGS,
     STATUS_CPU_STATUS,
     STATUS_SAMPLES,
+    VOICE_ANY,
     Command,
     FrameDecoder,
     decode_response,
@@ -227,8 +230,18 @@ class XsynthClient:
             raise RuntimeError(f"the board reported error {code:#04x}")
         return Status.parse(response)
 
-    def note_on(self, hz: float = DEFAULT_TONE_HZ, *, voice: int = 0,
+    def note_on(self, hz: float = DEFAULT_TONE_HZ, *, voice: int = VOICE_ANY,
                 wave: str | None = None, delay: int = 0) -> None:
+        """Start a note.
+
+        Naming no voice asks the firmware to pick one. A note is identified by
+        the phase increment it was started with, so `note_off` wants the same
+        `hz` back rather than a voice number.
+
+        `wave` names no voice either, and since a waveform is not what makes a
+        note a note, it goes to every voice. That is the useful reading of
+        "play this note with a saw": the patch changes, then the note starts.
+        """
         commands = []
         if wave is not None:
             commands.append(self.wave_command(wave, voice=voice, delay=0))
@@ -237,23 +250,46 @@ class XsynthClient:
         ))
         self.send_commands(commands)
 
-    def note_off(self, *, voice: int = 0, delay: int = 0) -> None:
-        self.send_commands([Command(OP_NOTE_OFF, voice=voice, delay=delay)])
+    def note_off(self, hz: float | None = None, *, voice: int = VOICE_ANY,
+                 delay: int = 0) -> None:
+        """Stop a note.
 
-    def set_freq(self, hz: float, *, voice: int = 0, delay: int = 0) -> None:
+        With no voice, `hz` identifies which note: the firmware releases the
+        voice whose step matches, oldest first, so a host never has to learn
+        which voice it was given. Naming a voice stops that voice and ignores
+        `hz`.
+        """
+        if voice == VOICE_ANY and hz is None:
+            raise ValueError(
+                "a note-off with no voice needs the hz the note was started at"
+            )
+        value = self.step_for(hz) if hz is not None else 0
+        self.send_commands([
+            Command(OP_NOTE_OFF, voice=voice, value=value, delay=delay),
+        ])
+
+    def set_freq(self, hz: float, *, voice: int = VOICE_ANY,
+                 delay: int = 0) -> None:
+        """Change a voice's pitch. Naming no voice changes every one, since
+        "which voice" and "the new frequency" would both want the value
+        field."""
         self.send_commands([
             Command(OP_SET_FREQ, voice=voice, value=self.step_for(hz),
                     delay=delay),
         ])
 
-    def set_amp(self, fraction: float, *, voice: int = 0,
+    def set_amp(self, fraction: float, *, voice: int = VOICE_ANY,
                 delay: int = 0) -> None:
+        """Set the note's own level, which is how far its attack travels.
+        Naming no voice sets every one."""
         self.send_commands([
             Command(OP_SET_AMP, voice=voice, value=self.level_for(fraction),
                     delay=delay),
         ])
 
-    def set_wave(self, wave: str, *, voice: int = 0, delay: int = 0) -> None:
+    def set_wave(self, wave: str, *, voice: int = VOICE_ANY,
+                 delay: int = 0) -> None:
+        """Select a waveform. Naming no voice selects it for every one."""
         self.send_commands([self.wave_command(wave, voice=voice, delay=delay)])
 
     def set_envelope(self, *, attack: float | None = None,
@@ -289,7 +325,33 @@ class XsynthClient:
         ])
 
     def reset(self, *, delay: int = 0) -> None:
+        """Silence everything and clear the firmware's own state: the voices,
+        the allocator's shadow, the pending schedule and the error flags."""
         self.send_commands([Command(OP_RESET, delay=delay)])
+
+    def now(self, timeout: float | None = None) -> int:
+        """The engine's 48 kHz sample count, which is what a schedule's times
+        are measured in. The counter is free running from power-up, so a host
+        reads it once and works in absolutes from then on."""
+        return self.status(timeout).samples
+
+    def anchor(self, sample: int) -> None:
+        """Every command sent after this takes effect at `sample` plus the
+        delays accumulated since the anchor.
+
+        A single `delay` is 16 bits, so it reaches 1.365 seconds; a longer
+        silence is another anchor rather than an unrepresentable number. The
+        anchor stays in force until `clear_schedule` or `reset`, so a host that
+        sends nothing scheduled for a while should clear it rather than let a
+        live note land where the last planned one did.
+        """
+        self.send_commands([Command(OP_SCHEDULE_AT, value=sample)])
+
+    def clear_schedule(self) -> None:
+        """Drop the events waiting to be played and go back to immediate. The
+        notes already sounding are left alone, and so is the allocator's
+        knowledge of them -- a later note-off still has to find its voice."""
+        self.send_commands([Command(OP_CLEAR_SCHEDULE)])
 
     def load(self, image: bytes, *, base: int = 0) -> int:
         """Write a firmware image into program memory.

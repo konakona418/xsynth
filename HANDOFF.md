@@ -384,39 +384,68 @@ directly and checks each stage of the envelope against exact arithmetic,
 `tests/test_phase2.py` sends a chord and a voice-addressed note-off over the
 wire, and `xsynth sim --phase 2` prints a three-voice chord and an envelope.
 
-### Next: Phase 4b — the firmware starts deciding
+### Phase 4b — the firmware starts deciding
 
-**The filter is dropped; do not build one.** PLAN.md records the reasoning. The
-short version: a filter treats the symptom (our naive saw/square alias badly)
-and band-limited wavetables treat the cause, and it is the weakest item left for
-the co-design story — it is just more DSP in a slot whose reuse is already
-proven, whereas the allocator and the sequencer show the *soft core making
-decisions*, which is the thing this project exists to show. It was a checkbox
-in a plan written before we knew where the difficulty was.
+**Built and tested, not yet on hardware.** The design reasoning is in PLAN.md;
+what follows is what exists and what bit back.
 
-So Phase 4b is firmware work, in `xsynth/sw/main.c`:
+All firmware: the mailbox, the command FIFO, the `CommandScheduler` and
+`REG_SAMPLES` already had what it needed, so there is **no bitstream rebuild and
+no hardware change**. It also closes Phase 5, whose other two work items were
+finished as a side effect of Phase 2.
 
-* **A note-to-voice allocator.** A host should be able to send a note-on with no
-  voice in mind and have the firmware pick one. That needs the firmware to track
-  which voices are busy, which note each holds, and what to steal when all eight
-  are (oldest, or the one furthest into its release). It needs a way to tell a
-  host's note-on from a voice-addressed one — the `voice` field is free for
-  that, and `0xFF` is the obvious "any".
-* **Sample-accurate sequencing** on the command `delay` field. The hardware
-  already honours `delay` exactly (that is Phase 2's `CommandScheduler`), so
-  what is missing is the firmware's ability to *emit* a schedule: absolute
-  timestamps in, relative delays out, without the FIFO overflowing.
+* **A note-to-voice allocator.** `voice = 0xFF` (`VOICE_ANY`) means "you
+  decide". The firmware keeps a three-state shadow per voice (idle / sounding /
+  releasing) and steals the longest-releasing, then the oldest-sounding.
+  `NOTE_OFF` with `VOICE_ANY` carries the note's *step* in `value` and releases
+  the oldest voice matching it, so a host never has to learn which voice it got.
+  On anything but a note, `VOICE_ANY` means *every* voice, because "which voice"
+  and "the new value" would both want the value field.
+* **Absolute-timestamp scheduling.** `OP_SCHEDULE_AT` re-anchors the firmware's
+  time accumulator; the commands after it accumulate their `delay` fields into
+  absolute sample times, held in a 256-entry ring in the BSRAM. The firmware
+  pushes events as they come due with `delay = T - max(T_prev, now)`, so a chain
+  still in flight stays exact to the sample and one that has drained re-anchors
+  within the two samples of fetch uncertainty. `OP_CLEAR_SCHEDULE` drops what is
+  pending *and* unanchors -- without that there would be no way back to
+  immediate at all, because the anchor is otherwise sticky for the life of the
+  firmware.
 
-Both are decisions, not plumbing, which is the point. `xsynth/sw/main.c`
-currently forwards commands one to one and decides nothing.
+The firmware is split so it can be tested: `xsynth/sw/control.{h,c}` holds the
+allocator and the ring and touches no MMIO, and `xsynth/sw/main.c` is the
+wiring. `tests/test_control.py` compiles `control.c` with the *host's* compiler
+and drives it through ctypes -- 34 tests in under a second, which is what makes
+the boundary cases (wrap-around, a full ring, stealing order, late events)
+practical to cover. The iverilog tests stay for the thing they are good at:
+proving the wiring is right.
 
-The engine itself is done: eight voices, a shared ADSR, per-voice level, a
-saturating mix and a master. `xsynth sim --phase 2` and `xsynth sim --phase 3`
-both exercise it, and the host can already address any voice
-(`note-on --voice N`).
+Things that bit, all now in the gotchas:
+
+* `% 384` needs `__umodsi3` and `-nostdlib` does not link it, so the ring had to
+  become a power of two and wrap with a mask. That is also why it is 256 entries
+  and not 384: 512 overflows the memory region outright.
+* The sims defaulted to 256 and 1024 words where the board has 2048, so a
+  firmware that fits the hardware did not fit the testbench -- and the loader
+  address wrapped, overwriting the start of the program with its own tail.
+  Both now take the size from `xsynth.hdl.soc`.
+* `-Os` rather than `-O2`: memory is the binding constraint, and `-Oz` wants a
+  `memcpy` that a freestanding build has not got.
+
+Measured: **1960 bytes of code, 3196 of .bss** -- 63% of the eight kilobytes,
+with three kilobytes left for a stack that has no recursion under it.
 
 ## Gotchas learned the hard way
 
+* **RV32I has no divider and `-nostdlib` has no `__umodsi3`.** A ring buffer
+  sized to anything but a power of two wants a modulo, and the link fails with
+  an undefined symbol rather than doing anything useful. Mask instead.
+* **A simulator's defaults are not the board's.** `xsynth/sim/soc.py` and
+  `xsynth/sim/phase3.py` each had their own idea of how much memory the SoC has
+  (256 and 1024 words) while the hardware has 2048. The firmware grew past the
+  smaller ones and the *loader address wrapped*, so the tail of the image
+  overwrote its own start and the CPU trapped on garbage. Both now take the
+  size from `xsynth.hdl.soc`. If a program fits the board and not the testbench,
+  the testbench is wrong.
 * **A register holding a request must not also have an unconditional default.**
   `d += pending.eq(0)` at the top of an `elaborate` looks like a harmless
   default and is not: it clears the flag on the very next cycle, so a request
