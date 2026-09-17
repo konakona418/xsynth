@@ -119,12 +119,34 @@ static int allocate(control_state *state, unsigned step) {
 /* The voice playing `step`, oldest first, or -1 if the note is not playing.
    A note keeps the step it was started with: changing the frequency of a voice
    does not change which note it is. */
+/* Which voice a note-off means. The step is the note's identity, so this is
+   the oldest voice *still sounding* that step -- and that qualifier is the
+   whole job. A melody repeats pitches, and a repeat is given a new voice
+   because the first one is still releasing; if the note-off were allowed to
+   pick a voice that has already let go, `let_go` would do nothing to it and
+   the voice that is actually sounding would never be released. So a releasing
+   voice is only chosen when nothing is sounding, which keeps a duplicate
+   note-off harmless rather than harmful. */
 static int find(control_state *state, unsigned step) {
     unsigned i;
     int best = -1;
 
     for (i = 0; i < VOICE_COUNT; i++) {
-        if (state->voices[i].state == VOICE_IDLE) {
+        if (state->voices[i].state != VOICE_SOUNDING) {
+            continue;
+        }
+        if (state->voices[i].step != step) {
+            continue;
+        }
+        if (best < 0 || older(state->voices[i].stamp, state->voices[best].stamp)) {
+            best = (int)i;
+        }
+    }
+    if (best >= 0) {
+        return best;
+    }
+    for (i = 0; i < VOICE_COUNT; i++) {
+        if (state->voices[i].state != VOICE_RELEASING) {
             continue;
         }
         if (state->voices[i].step != step) {

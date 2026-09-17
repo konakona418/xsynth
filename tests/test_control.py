@@ -279,6 +279,21 @@ def test_a_note_keeps_the_step_it_started_with(control):
     assert control.command(note_off(440))[0].voice == 2
 
 
+def test_a_repeated_note_is_released_even_after_the_first_one_let_go(control):
+    """A melody repeats pitches, and the repeat gets a new voice because the
+    first is still releasing. A note-off names the step, so picking that
+    already-releasing voice does nothing at all -- and the voice that is
+    actually sounding stays on for good."""
+    control.reset()
+    assert control.command(note_on(440))[0].voice == 0
+    control.command(note_off(440))
+    assert control.command(note_on(440))[0].voice == 1
+
+    released = control.command(note_off(440))
+    assert [(c.opcode, c.voice) for c in released] == [(OP_NOTE_OFF, 1)]
+    assert control.state_of(1) == RELEASING
+
+
 def test_naming_no_voice_on_anything_but_a_note_is_a_broadcast(control):
     control.reset()
     out = control.command(Command(OP_SET_WAVE, voice=VOICE_ANY, value=2, delay=7))
