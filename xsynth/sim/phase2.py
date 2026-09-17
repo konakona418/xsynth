@@ -42,7 +42,11 @@ CONTROL_HZ = 27_000_000
 PIXEL_HZ = 25_200_000
 SAMPLE_RATE = 48_000
 DEFAULT_BAUD = 1_000_000
-STROBE_PERIOD = 8
+# The engine walks its voices two pixel clocks each, so a sample boundary has
+# to be more than sixteen clocks after the last one. On the board it is 525;
+# here it is as short as that constraint allows, because every extra clock is
+# one more simulation step per sample.
+STROBE_PERIOD = 32
 
 TEST_SAMPLE_RATE = PIXEL_HZ // STROBE_PERIOD
 
@@ -75,6 +79,7 @@ class Result:
     step: int = 0
     wave: int = 0
     amp: int = 0
+    level: int = 0
     fifo_level: int = 0
     error_flags: int = 0
 
@@ -107,8 +112,12 @@ def run_scenario(frames, *, baud: int = DEFAULT_BAUD, cycles: int = 15_000,
                 if payload is not None:
                     result.responses.append(payload)
             await ctx.tick("sync")
-        for name in ("step", "wave", "amp", "fifo_level", "error_flags"):
-            setattr(result, name, ctx.get(getattr(core, name)))
+        result.step = ctx.get(core.voice.step[0])
+        result.wave = ctx.get(core.voice.wave[0])
+        result.amp = ctx.get(core.amp)
+        result.level = ctx.get(core.voice.level[0])
+        result.fifo_level = ctx.get(core.fifo_level)
+        result.error_flags = ctx.get(core.error_flags)
         finished = True
 
     async def audio(ctx):

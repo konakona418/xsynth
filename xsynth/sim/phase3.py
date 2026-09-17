@@ -28,7 +28,9 @@ CONTROL_HZ = 100_000_000
 PIXEL_HZ = 76_923_077
 BAUD = 1_000_000
 CLOCK_HALF_NS = 5
-STROBE_PERIOD = 8
+# The engine walks its voices two pixel clocks each, so a sample boundary has
+# to be more than sixteen clocks after the last one (the board gives it 525).
+STROBE_PERIOD = 32
 
 DEFAULT_TIMEOUT = 20_000
 DEFAULT_MEM_WORDS = 1024
@@ -72,6 +74,7 @@ def testbench(frames, *, condition: str, baud: int = BAUD,
     """
     divisor = round(clock_hz / baud)
     bit_ns = divisor * 2 * CLOCK_HALF_NS
+    strobe_bits = (STROBE_PERIOD - 1).bit_length()
     sends = "\n".join(
         f"        send_byte(8'h{byte:02X});" for byte in b"".join(frames)
     )
@@ -119,7 +122,7 @@ module testbench;
 
     // One audio strobe every {STROBE_PERIOD} pixel cycles, as the pixel-clock
     // divider produces on the board.
-    reg [3:0] strobe_div = 0;
+    reg [{strobe_bits - 1}:0] strobe_div = 0;
     always @(posedge pixel_clk) begin
         strobe_div <= strobe_div + 1;
         audio_strobe <= (strobe_div == 0);

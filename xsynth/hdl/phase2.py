@@ -36,7 +36,7 @@ from xsynth.hdl.pcpi import CommandCoProcessor
 from xsynth.hdl.uart import UartRx, UartTx, uart_timing
 from xsynth.hdl.video import make_pattern
 from xsynth.hdl.video_modes import DEFAULT_MODE, VideoMode
-from xsynth.hdl.voice import CommandScheduler, VoiceControl, WavetableVoice
+from xsynth.hdl.voice import CommandScheduler, VoiceBank
 from xsynth.protocol import (
     ERR_BAD_COMMAND,
     ERR_BAD_LENGTH,
@@ -327,12 +327,17 @@ class Phase2Core(Elaboratable):
         self.locked = Signal()
 
         self.sample = Signal(SAMPLE_BITS)
-        self.step = Signal(32)
-        self.wave = Signal(2)
-        self.amp = Signal(SAMPLE_BITS)
         self.error_flags = Signal(8)
         self.fifo_level = Signal(8)
         self.samples = Signal(32)
+
+        # The engine is built here rather than in elaborate so that the
+        # simulations and the phase 3 testbench can name its signals as
+        # top-level ports before the design is elaborated.
+        self.voice = VoiceBank()
+        # Voice 0's envelope level: the note's amplitude, for the harnesses to
+        # read without reaching into the voice array.
+        self.amp = Signal(SAMPLE_BITS)
 
     def elaborate(self, platform):
         m = Module()
@@ -445,23 +450,13 @@ class Phase2Core(Elaboratable):
         m.submodules.scheduler = scheduler = CommandScheduler(fifo)
         m.d.comb += scheduler.strobe.eq(self.audio_strobe)
 
-        m.submodules.control = control = VoiceControl()
-        m.d.comb += [
-            control.apply.eq(scheduler.apply),
-            control.command.eq(scheduler.command),
-        ]
-
-        m.submodules.voice = voice = WavetableVoice()
+        m.submodules.voice = voice = self.voice
         m.d.comb += [
             voice.strobe.eq(self.audio_strobe),
-            voice.reset_phase.eq(control.reset_phase),
-            voice.step.eq(control.step),
-            voice.wave.eq(control.wave),
-            voice.amp.eq(control.amp),
+            voice.apply.eq(scheduler.apply),
+            voice.command.eq(scheduler.command),
             self.sample.eq(voice.sample),
-            self.step.eq(control.step),
-            self.wave.eq(control.wave),
-            self.amp.eq(control.amp),
+            self.amp.eq(voice.env[0][voice.env_shift:]),
         ]
 
         return m

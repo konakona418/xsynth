@@ -51,6 +51,15 @@ OP_SET_WAVE = 0x04
 OP_SET_AMP = 0x05
 OP_RESET = 0x06
 
+# Phase 4. The envelope settings are global (one set of rates shared by every
+# voice, as on almost every synth); the envelope *state* is per voice. The
+# remaining per-voice opcodes are addressed by the command's voice field.
+OP_SET_ATTACK = 0x07
+OP_SET_DECAY = 0x08
+OP_SET_SUSTAIN = 0x09
+OP_SET_RELEASE = 0x0A
+OP_SET_MASTER = 0x0B
+
 OP_NAMES = {
     OP_NOTE_ON: "note_on",
     OP_NOTE_OFF: "note_off",
@@ -58,7 +67,17 @@ OP_NAMES = {
     OP_SET_WAVE: "set_wave",
     OP_SET_AMP: "set_amp",
     OP_RESET: "reset",
+    OP_SET_ATTACK: "set_attack",
+    OP_SET_DECAY: "set_decay",
+    OP_SET_SUSTAIN: "set_sustain",
+    OP_SET_RELEASE: "set_release",
+    OP_SET_MASTER: "set_master",
 }
+
+# The opcodes that name a voice, and so have to carry a valid voice index.
+PER_VOICE_OPS = frozenset({
+    OP_NOTE_ON, OP_NOTE_OFF, OP_SET_FREQ, OP_SET_WAVE, OP_SET_AMP,
+})
 
 WAVES = ("sine", "saw", "square", "triangle")
 WAVE_INDEX = {name: index for index, name in enumerate(WAVES)}

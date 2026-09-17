@@ -24,9 +24,15 @@ NUM_SAMPLES = 4800  # 0.1 s
 
 
 def measure_frequency(samples: list[int], sample_rate: int) -> float:
-    """Tone frequency from the rising zero crossings of a signed signal."""
+    """Tone frequency from the rising zero crossings of a signed signal.
+
+    Each crossing is interpolated between the two samples that straddle zero.
+    Counting whole samples instead quantises the answer to the sample spacing,
+    which over a window of ten periods is a tenth of a percent -- the same size
+    as the errors these tests exist to catch.
+    """
     crossings = [
-        i
+        i - 1 + (-samples[i - 1] / (samples[i] - samples[i - 1]))
         for i in range(1, len(samples))
         if samples[i - 1] < 0 <= samples[i]
     ]

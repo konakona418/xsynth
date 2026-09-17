@@ -71,7 +71,7 @@ def test_amplitude_is_clamped_to_the_sample_range():
     result = run_scenario([encode_commands([
         Command(OP_SET_AMP, value=0xFFFFFFFF),
     ])])
-    assert result.amp == PEAK
+    assert result.level == PEAK
 
 
 def test_a_corrupted_frame_does_not_disturb_the_next_one():

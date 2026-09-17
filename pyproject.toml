@@ -21,6 +21,7 @@ xsynth = "xsynth.cli:main"
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "pytest-xdist>=3.6",
 ]
 
 [build-system]
@@ -32,3 +33,8 @@ packages = ["xsynth"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The whole-system simulations (phase 2's pysim and phase 3's iverilog) are
+# minutes of single-threaded work, so the suite runs across the machine's cores
+# by default. Nothing is shared: the firmware build and the Verilog harness
+# each work in their own TemporaryDirectory, so there is no race to lose.
+addopts = "-n auto --dist load"
