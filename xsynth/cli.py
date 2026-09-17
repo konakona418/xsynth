@@ -267,8 +267,9 @@ def _run_listen(args) -> int:
             "which source? `xsynth listen --list` shows them, then pass "
             "--source"
         )
+    extra = {} if args.warmup is None else {"warmup": args.warmup}
     listen(args.seconds, source=args.source, output=args.output,
-           play=not args.no_play, report=print)
+           play=not args.no_play, report=print, **extra)
     return 0
 
 
@@ -426,6 +427,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="where to keep the recording")
     listen.add_argument("--no-play", action="store_true",
                         help="record without playing it back")
+    listen.add_argument("--warmup", type=float, default=None,
+                        help="seconds of capture to throw away first "
+                             "(default: 6)")
 
     args = parser.parse_args(argv)
 

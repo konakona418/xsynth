@@ -108,10 +108,12 @@ def test_the_source_is_unmuted_and_turned_up(monkeypatch):
     ]
 
 
-def test_a_capture_is_bounded_by_timeout(monkeypatch, tmp_path):
-    """`parecord -d` does nothing, so `timeout` is the only bound -- and there
-    is no throwaway capture in front of it, because that would throw away the
-    first second of whatever the caller was about to play."""
+def test_a_capture_throws_a_warmup_away_before_the_one_that_counts(
+        monkeypatch, tmp_path):
+    """`parecord -d` does nothing, so `timeout` is the only bound. The throwaway
+    in front is what stops the card losing the beginning of the real capture:
+    measured against a 43.93 s score, one second of it still lost 1.15 s and six
+    lost nothing."""
     runs = []
 
     def fake_run(command, **kwargs):
@@ -122,12 +124,47 @@ def test_a_capture_is_bounded_by_timeout(monkeypatch, tmp_path):
     monkeypatch.setattr(listen, "prepare", lambda source: None)
     listen.capture(3.0, tmp_path / "out.wav", source="card")
 
+    assert [command[0] for command in runs] == ["timeout", "timeout"]
+    captures = [command for command in runs if command[2] == "parecord"]
+    assert captures[0][1] == str(listen.WARMUP_SECONDS)
+    assert captures[1][1] == "3.0"
+    assert captures[1][-1] == str(tmp_path / "out.wav")
+    assert "--device=card" in captures[1]
+
+
+def test_the_warmup_can_be_turned_off(monkeypatch, tmp_path):
+    runs = []
+
+    def fake_run(command, **kwargs):
+        runs.append(command)
+        return subprocess.CompletedProcess(command, listen.TIMED_OUT, "", "")
+
+    monkeypatch.setattr(listen, "_run", fake_run)
+    monkeypatch.setattr(listen, "prepare", lambda source: None)
+    listen.capture(3.0, tmp_path / "out.wav", source="card", warmup=0)
     assert len(runs) == 1
-    assert runs[0][0] == "timeout"
-    assert runs[0][1] == "3.0"
-    assert runs[0][2] == "parecord"
-    assert runs[0][-1] == str(tmp_path / "out.wav")
-    assert "--device=card" in runs[0]
+
+
+def test_the_recording_is_announced_when_it_starts_not_before(monkeypatch,
+                                                              tmp_path):
+    """The warm-up must not be inside the window the announcement covers, or it
+    would swallow whatever was played right after it."""
+    order = []
+
+    def fake_run(command, **kwargs):
+        order.append(("capture", command[1]))
+        return subprocess.CompletedProcess(command, listen.TIMED_OUT, "", "")
+
+    monkeypatch.setattr(listen, "_run", fake_run)
+    monkeypatch.setattr(listen, "prepare", lambda source: None)
+    monkeypatch.setattr(listen, "resolve", lambda source, known=None: "card")
+    monkeypatch.setattr(listen, "play_back", lambda path: None)
+    listen.listen(3.0, source="card", output=tmp_path / "out.wav",
+                  warmup=6.0, report=lambda line: order.append(("report", line)))
+
+    assert order[0] == ("capture", "6.0")
+    assert order[1][0] == "report" and "recording" in order[1][1]
+    assert order[2] == ("capture", "3.0")
 
 
 def test_a_capture_that_fails_for_another_reason_is_reported(monkeypatch,
@@ -143,7 +180,13 @@ def test_a_capture_that_fails_for_another_reason_is_reported(monkeypatch,
 
 def test_listen_says_what_it_recorded_and_where(monkeypatch, tmp_path):
     _pactl(monkeypatch, SOURCES)
-    monkeypatch.setattr(listen, "capture", lambda seconds, path, source: path)
+
+    def fake_capture(seconds, path, source, warmup=0, report=None):
+        if report is not None:
+            report(f"recording {seconds:g} s from {source}")
+        return path
+
+    monkeypatch.setattr(listen, "capture", fake_capture)
     monkeypatch.setattr(listen, "play_back", lambda path: None)
 
     lines = []
@@ -157,7 +200,7 @@ def test_listen_says_what_it_recorded_and_where(monkeypatch, tmp_path):
 def test_playback_can_be_skipped(monkeypatch, tmp_path):
     _pactl(monkeypatch, SOURCES)
     played = []
-    monkeypatch.setattr(listen, "capture", lambda seconds, path, source: path)
+    monkeypatch.setattr(listen, "capture", lambda seconds, path, source, **kw: path)
     monkeypatch.setattr(listen, "play_back", played.append)
 
     listen.listen(1.0, source=CARD, output=tmp_path / "kept.wav", play=False)
@@ -166,7 +209,7 @@ def test_playback_can_be_skipped(monkeypatch, tmp_path):
 
 def test_the_default_output_is_a_temporary_file(monkeypatch):
     _pactl(monkeypatch, SOURCES)
-    monkeypatch.setattr(listen, "capture", lambda seconds, path, source: path)
+    monkeypatch.setattr(listen, "capture", lambda seconds, path, source, **kw: path)
     monkeypatch.setattr(listen, "play_back", lambda path: None)
 
     path = listen.listen(1.0, source=CARD)

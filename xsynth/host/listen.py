@@ -11,14 +11,13 @@ each of them learned the hard way:
   file is correct either way.
 * **The source ships muted.** A muted capture is a file of zeroes, which looks
   exactly like a board that is not playing.
-* **The card is unreliable.** It reports itself `RUNNING` and then sometimes
-  delivers nothing at all for a whole capture, and since the board's own silence
-  is exact zeroes there is no way to tell that apart from a board that is not
-  playing. Nothing here can fix that -- a throwaway capture first was tried and
-  measured, and one second of it works no better than six -- so a recording of
-  nothing means run it again, not that the board is broken. It also means the
-  recording starts when this says it does, rather than a second later with the
-  first second thrown away.
+* **The card loses the front of a capture** if it has not been streaming for
+  long enough, and it loses it silently -- what is missing is the beginning of
+  whatever you were recording, which is the part you were listening for. A
+  throwaway capture first fixes it, but it has to be seconds rather than one:
+  measured against a 43.93 s score, one second of warm-up still lost 1.15 s off
+  the front and six seconds lost nothing. So the warm-up happens *before*
+  anything is announced, and nothing played after the announcement is at risk.
 
 Doing the first two here is the whole point: the recording is what the board is
 judged on, and it should be one command away rather than a recipe.
@@ -45,6 +44,12 @@ from xsynth.host.client import SAMPLE_RATE
 
 CHANNELS = 2
 SAMPLE_FORMAT = "s16le"
+
+# How long a capture to throw away before the one that counts. The card loses
+# the front of a capture it was not already streaming for, and one second of
+# warm-up is not enough -- six is, measured against a 43.93 s score. It runs
+# before anything is announced, so nothing played after that is lost.
+WARMUP_SECONDS = 6.0
 
 # `timeout` reports this when it had to kill the process, which is how a
 # capture is supposed to end.
@@ -148,9 +153,19 @@ def _capture(seconds: float, source: str, path: Path) -> None:
         raise ListenError(f"parecord failed: {result.stderr.strip()}")
 
 
-def capture(seconds: float, path: Path, *, source: str) -> Path:
-    """Record ``seconds`` of ``source`` into ``path``."""
+def capture(seconds: float, path: Path, *, source: str,
+            warmup: float = WARMUP_SECONDS, report=None) -> Path:
+    """Record ``seconds`` of ``source`` into ``path``.
+
+    The warm-up happens before ``report`` is called, so a caller that announces
+    the recording on that callback is announcing it when it actually starts.
+    """
     prepare(source)
+    if warmup > 0:
+        with tempfile.NamedTemporaryFile(suffix=".wav") as throwaway:
+            _capture(warmup, source, Path(throwaway.name))
+    if report is not None:
+        report(f"recording {seconds:g} s from {source}")
     _capture(seconds, source, path)
     return path
 
@@ -163,13 +178,15 @@ def play_back(path: Path) -> None:
 
 
 def listen(seconds: float, *, source: str, output: str | Path | None = None,
-           play: bool = True, report=None) -> Path:
+           play: bool = True, warmup: float = WARMUP_SECONDS,
+           report=None) -> Path:
     """Record ``source`` for ``seconds`` and play it back.
 
     ``source`` is a handle from :func:`listing` or a whole source name; anything
     else is refused rather than guessed at. Returns the file, which is a
     temporary one unless ``output`` names it. ``report`` is called with progress
-    lines, if the caller wants them.
+    lines, if the caller wants them -- the first of them when the recording
+    actually starts, which is after the warm-up.
     """
     name = resolve(source)
     if output is not None:
@@ -177,9 +194,7 @@ def listen(seconds: float, *, source: str, output: str | Path | None = None,
     else:
         stamp = time.strftime("%H%M%S")
         path = Path(tempfile.gettempdir()) / f"xsynth-{stamp}.wav"
-    if report is not None:
-        report(f"recording {seconds:g} s from {name}")
-    capture(seconds, path, source=name)
+    capture(seconds, path, source=name, warmup=warmup, report=report)
     if report is not None:
         report(f"wrote {path}")
     if play:

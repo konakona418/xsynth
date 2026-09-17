@@ -154,11 +154,14 @@ file back. The unmuting and the `timeout` are the point: `parecord -d` does
 nothing, and the source ships muted, so a hand-rolled capture is a recipe with
 traps in it.
 
-The card itself is not to be trusted. It reports itself `RUNNING` and then
-sometimes delivers nothing at all for a whole capture, and since the board's
-own silence is exact zeroes there is no way to tell the two apart in the file.
-**A recording of nothing means try again, not that the board is broken** -- and
-when in doubt, listen live instead:
+The card also **loses the front of a capture** it was not already streaming
+for -- about 1.2 seconds of it, silently, which is exactly the part of a
+recording anyone was listening for. `listen` throws six seconds away before the
+one that counts and prints `recording` when it actually starts, so nothing
+played after that line is at risk. One second of warm-up is not enough; six is.
+`--warmup 0` turns it off.
+
+When in doubt, listen live instead:
 
 ```bash
 ffplay -f pulse -i <source> -showmode 2      # spectrum view, no file in between
