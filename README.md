@@ -10,10 +10,9 @@ every decision about what to play.
 
 ## Status
 
-Phases 0, 1, 2, 3a and 3b are implemented and verified on hardware: full HDMI
-video (640x480@60), 48 kHz / 16-bit stereo audio, live control of the engine
-over the USB UART, and a PicoRV32 soft core that runs programs the host
-uploads — including the one that owns the command path.
+Built and verified on hardware: full HDMI video (640x480@60), 48 kHz / 16-bit
+stereo audio, live control of the engine over the USB UART, and a soft core that
+runs programs the host uploads -- including the one that owns the command path.
 
 | Phase | Deliverable | State |
 | --- | --- | --- |
@@ -25,14 +24,14 @@ uploads — including the one that owns the command path.
 | 4a | 8-voice engine, ADSR, saturating mix | built, verified on hardware |
 | 4b | Firmware voice allocation + sequencing | built, verified on hardware |
 | 5 | Sample-accurate sequencer | closed by 4b |
-| 6 | Custom LLVM toolchain | dropped by decision, see PLAN |
+| 6 | Custom LLVM toolchain | dropped by decision |
 
 Phase 4 was planned with a filter; it was dropped in favour of band-limited
-wavetables, which fix the aliasing at its source rather than after it — that work
-is deferred and not scheduled against any phase. Phase 5's other two work items —
-a monotonic sample counter and applying an event on its target sample — were
-finished as a side effect of Phase 2, so absolute timestamps in 4b were all that
-was left.
+wavetables, which fix aliasing at its source rather than after it. That work is
+deferred and not scheduled against any phase, so the saw and square tables are
+naive and alias. Phase 6 would have been an LLVM fork to give C a custom
+instruction; the channel is two instructions already, and the fork's whole
+payoff was turning two inline `asm` statements into two intrinsics.
 
 ## Toolchain
 
@@ -55,27 +54,83 @@ openFPGALoader --detect
 If `openFPGALoader` is not on `PATH`, set `OPENFPGALOADER_PATH`. On Windows,
 `OPENFPGALOADER_DYNLIB_PATH` may also be needed.
 
-## Usage
+## From a blank board to music
+
+Four steps. The first two put a design on the FPGA, the third puts a program in
+the soft core, and the fourth plays something.
+
+**1. Build and program the FPGA.** `--no-flash` writes the configuration to
+SRAM, which is volatile and survives until the board loses power; without it the
+bitstream goes to SPI flash and the board configures itself at power-up:
 
 ```bash
-# Simulate a phase (fast, no toolchain needed)
-uv run xsynth sim --phase 2
-
-# Elaborate, synthesize, place & route, and pack a bitstream
-uv run xsynth build --phase 2 --no-program
-
-# Build and program the FPGA (SRAM; use without --no-flash for persistent flash)
-uv run xsynth build --phase 2 --no-flash
-
-# Once programmed, drive it over the USB UART
-uv run xsynth host status
-uv run xsynth host note-on --hz 440 --wave saw
-uv run xsynth host note-off
-
-# Play a score, and hear what the HDMI sink received
-uv run xsynth play tune.txt
-uv run xsynth listen 5
+uv run xsynth build --phase 3 --no-flash    # SRAM: gone at power-off
+uv run xsynth build --phase 3               # flash: boots itself
 ```
+
+`--no-flash` is the right default while the design is changing, because a power
+cycle is a cheaper reset than a flash erase. Both take about six minutes: the
+soft core roughly doubles the LUT count, and nextpnr's placer is superlinear in
+density. `build` also takes `--no-program` to stop after packing, and
+`--pattern bars|cycle|<hex>` and `--video-mode 640x480|1280x720` for the video.
+
+**2. Check that it is alive.** The debugger presents two USB serial interfaces,
+JTAG and the control UART, which on Linux are `/dev/ttyUSB0` and `/dev/ttyUSB1`.
+The JTAG one announces itself as such, so the client skips it and finds the UART
+on its own; pass `--port` to override. `status` should report `locked True` and
+`version 4`:
+
+```bash
+uv run xsynth host status
+```
+
+**3. Upload the firmware.** This is a separate step, and the reason is worth
+knowing: **the firmware is not in the bitstream.** The soft core's program
+memory is BRAM, and BRAM comes up empty, so a freshly configured board has a CPU
+with nothing to run. The image is built with clang (the LLVM `riscv32` target)
+and written into that memory over the same UART everything else uses:
+
+```bash
+uv run xsynth host load            # builds the bundled firmware and runs it
+uv run xsynth host load image.bin  # or a flat binary of your own
+```
+
+`cpu_stat` reading `0x5853594e` ("XSYN") means the firmware is the one talking.
+**This has to be repeated after every power cycle**, whether or not the bitstream
+came from flash -- flash holds the configuration, not the program. `xsynth/sw/`
+holds the firmware sources and `xsynth/firmware.py` builds them; the C register
+header is generated from the hardware's memory map, so the two cannot drift.
+
+**4. Play.** A score is a text file, one note to a line; `scores/` has a few and
+says where they came from:
+
+```bash
+uv run xsynth play scores/twinkle.txt
+```
+
+Then listen to what the HDMI sink actually received, rather than trusting the
+design:
+
+```bash
+uv run xsynth listen --list                 # the capture sources, with handles
+uv run xsynth listen 30 --source <handle>   # record 30 s and play it back
+uv run xsynth analyse <file>                # peak, RMS, fundamental, harmonics
+```
+
+`listen` finds the source by the handle you give it, unmutes it, records under
+`timeout`, and plays the file back. Nothing about that is incidental: `parecord
+-d` does nothing, the source ships muted, and the card **loses the front of a
+capture** it was not already streaming for -- about 1.2 seconds of it, silently,
+which is exactly the part of a recording anyone was listening for. So `listen`
+throws six seconds away before the one that counts and prints `recording` when
+it actually starts; one second of warm-up is not enough and `--warmup 0` turns
+it off. When in doubt, listen live instead, with no file in the way:
+
+```bash
+ffplay -f pulse -i <source> -showmode 2      # spectrum view
+```
+
+## Driving the engine by hand
 
 The engine has eight voices and the firmware allocates them. A note names no
 voice unless it is told to, and a note-off identifies its note by the pitch it
@@ -103,14 +158,15 @@ uv run xsynth host note-off --note 60 --at 1524000
 uv run xsynth host clear-schedule              # drop what is pending
 ```
 
-`--delay N` measures from the previous command instead, and the two compose:
-an anchor plus accumulating delays is how a whole melody goes out in one burst
+`--delay N` measures from the previous command instead, and the two compose: an
+anchor plus accumulating delays is how a whole melody goes out in one burst
 without the host tracking which voice anything landed on. `anchor` takes the
 current sample count and makes everything after it relative to that, for a host
 that would rather not do the arithmetic.
 
-A whole piece goes in a file, one note a line, and `play` streams it into the
-firmware's schedule. The board keeps the time from there:
+## Scores
+
+A score is notes and the patch to play them with, in a text file:
 
 ```bash
 cat > tune.txt <<'EOF'
@@ -134,135 +190,12 @@ Times are seconds, so what is written is what a recording is measured against.
 `;` starts a comment (`#` cannot: `A#3` is a note), and a pitch is a name
 (`C4`, `A#3`, `Bb3`) or a MIDI number. There is no velocity column, and that is
 not an oversight: `SET_AMP` addresses a voice, and with the firmware allocating
-voices a score cannot know which one a note will land on. See
-`xsynth/host/score.py`.
+voices a score cannot know which one a note will land on.
 
 The firmware holds 256 scheduled events and drops what does not fit, silently,
 so `play` streams into the ring rather than filling it once and walking away --
 which is why that capacity lives in `xsynth/protocol.py`, where the host can
 read it, instead of being a number only the firmware knows.
-
-To hear what came out of the HDMI sink:
-
-```bash
-uv run xsynth listen 5                 # record five seconds, play it back
-uv run xsynth listen 5 --output take.wav
-```
-
-It finds the capture card, unmutes it, records under `timeout`, and plays the
-file back. The unmuting and the `timeout` are the point: `parecord -d` does
-nothing, and the source ships muted, so a hand-rolled capture is a recipe with
-traps in it.
-
-The card also **loses the front of a capture** it was not already streaming
-for -- about 1.2 seconds of it, silently, which is exactly the part of a
-recording anyone was listening for. `listen` throws six seconds away before the
-one that counts and prints `recording` when it actually starts, so nothing
-played after that line is at risk. One second of warm-up is not enough; six is.
-`--warmup 0` turns it off.
-
-When in doubt, listen live instead:
-
-```bash
-ffplay -f pulse -i <source> -showmode 2      # spectrum view, no file in between
-```
-
-Phase 3 also runs a soft core. The firmware is built with clang (the LLVM
-`riscv32` target) and uploaded over the same UART:
-
-```bash
-uv run xsynth host load            # build the bundled firmware, upload, run
-uv run xsynth host load image.bin  # or upload a flat binary of your own
-uv run xsynth host run --stop      # put the CPU back into reset
-```
-
-`xsynth/sw/` holds the firmware sources; `xsynth/firmware.py` builds them. The C
-register header is generated from the hardware's memory map, so the two cannot
-drift apart.
-
-From phase 3b the firmware is what owns the command path. The hardware still
-does the wire — UART, framing and CRC — and hands each validated frame to the
-core through a mailbox; the firmware parses it and pushes the commands into the
-engine FIFO with a custom instruction (`xsynth.push`, claimed through PCPI).
-Because that instruction stalls the CPU while the FIFO is full, a busy engine
-slows the sequencer down instead of losing notes. `host load` reports the
-firmware's identity through `cpu_stat`, which reads `0x5853594e` ("XSYN").
-
-The board's onboard debugger presents two USB serial interfaces: JTAG and the
-control UART, which on Linux are `/dev/ttyUSB0` and `/dev/ttyUSB1`. The JTAG one
-announces itself as such, so the client skips it and finds the UART on its own;
-pass `--port` to override.
-
-To check what the HDMI sink actually received, record it and measure it:
-
-```bash
-uv run xsynth listen 5 --output tone.wav --no-play   # or parecord by hand
-uv run xsynth analyse tone.wav
-```
-
-Phase 1 accepts `--tone <hz>` (default 440); phases 2 and 3 accept `--baud
-<rate>` (default 115200). All accept `--pattern bars|cycle|<hex>` and
-`--video-mode 640x480|1280x720`.
-
-Build artifacts land in `build/`. `build/top.tim` is the nextpnr timing and
-utilisation report. A phase 3 build takes roughly six minutes: the CPU doubles
-the LUT count and nextpnr's placer is superlinear in density.
-
-## From a blank board to music
-
-Four steps. The first two put a design on the FPGA, the third puts a program in
-the soft core, and the fourth plays something.
-
-**1. Build and program the FPGA.** `--no-flash` writes the configuration to
-SRAM, which is volatile and survives until the board loses power; without it the
-bitstream goes to SPI flash and the board configures itself at power-up:
-
-```bash
-uv run xsynth build --phase 3 --no-flash    # SRAM: gone at power-off
-uv run xsynth build --phase 3               # flash: boots itself
-```
-
-`--no-flash` is the right default while the design is changing, because a power
-cycle is a cheaper reset than a flash erase. Both take about six minutes,
-because the soft core roughly doubles the LUT count.
-
-**2. Check that it is alive.** The debugger presents two USB serial ports and
-the client picks the UART out of them; `status` should report `locked True` and
-`version 4`:
-
-```bash
-uv run xsynth host status
-```
-
-**3. Upload the firmware.** This is a separate step, and the reason for it is
-worth knowing: **the firmware is not in the bitstream.** The soft core's program
-memory is BRAM, and BRAM comes up empty, so a freshly configured board has a CPU
-with nothing to run. The image is built with clang and written into that memory
-over the same UART everything else uses:
-
-```bash
-uv run xsynth host load            # builds the bundled firmware and runs it
-uv run xsynth host load image.bin  # or a flat binary of your own
-```
-
-`cpu_stat` reading `0x5853594e` ("XSYN") means the firmware is the one talking.
-**This has to be repeated after every power cycle**, whether or not the
-bitstream came from flash -- flash holds the configuration, not the program.
-
-**4. Play.** A score is a text file, one note to a line; `scores/` has a few and
-says where they came from:
-
-```bash
-uv run xsynth play scores/twinkle.txt
-```
-
-Then listen to what the HDMI sink actually received, rather than trusting the
-design:
-
-```bash
-uv run xsynth listen --list                 # the capture sources, with handles
-uv run xsynth listen 30 --source <handle>   # record 30 s and play it back
-```
 
 ## The control protocol
 
@@ -274,8 +207,8 @@ tools. On the wire::
     +------+------+-----+---------------+--------+--------+
 
 The first payload byte is the packet type. Commands are fixed 64-bit words, so
-the same encoding can be carried by the UART, the command FIFO and, later, the
-PicoRV32 PCPI port::
+the same encoding is carried by the UART, the command FIFO and the PicoRV32
+PCPI port::
 
     bits 63..56  opcode
     bits 55..48  voice
@@ -295,8 +228,8 @@ almost every synth — while the envelope's level and stage are per voice.
 
 `voice = 0xFF` means "firmware, you decide". On `NOTE_ON` that is an allocation;
 on `NOTE_OFF` the `value` field carries the note's phase increment and the
-firmware releases the oldest voice matching it; on the other three it means
-*every* voice, since a note can be placed by its increment but a frequency
+firmware releases the oldest voice *still sounding* it; on the other three it
+means *every* voice, since a note can be placed by its increment but a frequency
 cannot — "which voice" and "the new value" would both want the value field.
 
 Two opcodes are addressed to the firmware rather than the engine, and never
@@ -314,8 +247,8 @@ because that arithmetic belongs where floating point exists. `OP_SET_MASTER`
 scales the whole mix, which is how a host keeps an eight-voice chord inside the
 rails.
 
-Besides `COMMANDS`, `PING` and `STATUS`, phase 3 adds `LOAD` (a target address
-and a block of words, for uploading a program) and `RUN` (the CPU's run
+Besides `COMMANDS`, `PING` and `STATUS`, the protocol carries `LOAD` (a target
+address and a block of words, for uploading a program) and `RUN` (the CPU's run
 control). The status reply carries the CPU's flags, the firmware's scratch
 register and its free-running counter alongside the engine's own state.
 
@@ -324,6 +257,12 @@ and registers at `0x1000_0000` — a status word, a free-running counter, a run
 control, the 48 kHz sample counter, the mailbox (`RX_DATA`, `RX_STATUS`) and the
 firmware's command count. The C header the firmware compiles against is
 generated from those constants.
+
+The hardware does the wire — UART, framing and CRC — and hands each validated
+frame to the core through a mailbox; the firmware parses it and pushes the
+commands into the engine FIFO with a custom instruction (`xsynth.push`, claimed
+through PCPI). Because that instruction stalls the CPU while the FIFO is full, a
+busy engine slows the sequencer down instead of losing notes.
 
 ## Layout
 
@@ -344,6 +283,10 @@ xsynth/
 scores/            example scores, and where they came from
 tests/             pytest suite
 ```
+
+`uv run xsynth sim --phase 2` runs a design in the Amaranth simulator with no
+toolchain at all, which is the fast way to see a change before a six-minute
+build.
 
 ## Notes on the Gowin flow
 
