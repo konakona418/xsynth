@@ -2,8 +2,8 @@
 
 Usage examples::
 
-    uv run xsynth sim   --phase 2
-    uv run xsynth build --phase 2
+    uv run xsynth sim   --design control
+    uv run xsynth build --design firmware
     uv run xsynth host  status
     uv run xsynth host  note-on --hz 440 --wave saw
     uv run xsynth play  song.txt
@@ -19,8 +19,16 @@ from pathlib import Path
 
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
+    from xsynth.design import DESIGNS, FULL_DESIGN
+
     parser.add_argument("--board", default="tang-nano-9k", help="target board name")
-    parser.add_argument("--phase", type=int, default=0, help="design phase to build")
+    parser.add_argument(
+        "--design",
+        choices=DESIGNS,
+        default=FULL_DESIGN,
+        help="bring-up design to build; each one includes the ones before it "
+             f"(default: {FULL_DESIGN})",
+    )
 
 
 def _add_pattern(parser: argparse.ArgumentParser) -> None:
@@ -46,13 +54,13 @@ def _add_audio(parser: argparse.ArgumentParser) -> None:
         "--tone",
         type=float,
         default=440.0,
-        help="audio test tone in Hz (phase 1)",
+        help="audio test tone in Hz (the video design has no audio)",
     )
     parser.add_argument(
         "--baud",
         type=int,
         default=None,
-        help="control UART baud rate (phase 2 and later)",
+        help="control UART baud rate (control and firmware designs)",
     )
 
 
@@ -436,12 +444,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sim":
         from xsynth.design import simulate
 
-        simulate(args.phase, args.board, vcd=args.vcd)
+        simulate(args.design, args.board, vcd=args.vcd)
     elif args.command == "build":
         from xsynth.design import build
 
         build(
-            args.phase,
+            args.design,
             args.board,
             program=not args.no_program,
             program_to_flash=not args.no_flash,

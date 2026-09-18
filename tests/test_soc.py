@@ -1,4 +1,4 @@
-"""The phase 3 SoC: a real PicoRV32 running what the loader wrote."""
+"""The SoC: a real PicoRV32 running what the loader wrote."""
 
 from xsynth.firmware import FIRMWARE_MAGIC, build_firmware
 from xsynth.sim.soc import HALT_PROGRAM, simulate

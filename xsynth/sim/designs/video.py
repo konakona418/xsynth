@@ -1,4 +1,4 @@
-"""Phase 0 simulation: the colour-bar generator over one full frame."""
+"""The video design in simulation: the colour-bar generator over one frame."""
 
 from __future__ import annotations
 

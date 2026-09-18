@@ -1,6 +1,6 @@
-"""Phase 2 simulation: drive the control core without a board.
+"""The control design in simulation: drive the control core without a board.
 
-The board build wraps :class:`~xsynth.hdl.phase2.Phase2Core` in clocks, pins and
+The board build wraps :class:`~xsynth.hdl.designs.control.ControlCore` in clocks, pins and
 the HDMI black box; this harness keeps just the core, with a UART transmitter
 feeding its RX and a receiver watching its TX, so a whole command round trip can
 be exercised in Python.
@@ -19,7 +19,7 @@ from amaranth import Elaboratable, Module
 from amaranth.sim import Simulator
 
 from xsynth.hdl.audio import PEAK, phase_step, to_signed
-from xsynth.hdl.phase2 import Phase2Core
+from xsynth.hdl.designs.control import ControlCore
 from xsynth.hdl.uart import UartRx, UartTx, uart_timing
 from xsynth.hdl.voice import ENV_SHIFT, VOICES, WAVES
 from xsynth.protocol import (
@@ -38,7 +38,7 @@ from xsynth.protocol import (
     encode_commands,
     encode_frame,
 )
-from xsynth.sim.phase1 import measure_frequency
+from xsynth.sim.designs.audio import measure_frequency
 
 CONTROL_HZ = 27_000_000
 PIXEL_HZ = 25_200_000
@@ -57,11 +57,11 @@ TOP = PEAK << ENV_SHIFT
 
 
 class CoreHarness(Elaboratable):
-    """A :class:`Phase2Core` with a UART on each side."""
+    """A :class:`ControlCore` with a UART on each side."""
 
     def __init__(self, baud: int = DEFAULT_BAUD):
         divisor = uart_timing(CONTROL_HZ, baud).divisor
-        self.core = Phase2Core(baud=baud)
+        self.core = ControlCore(baud=baud)
         self.tx = UartTx(divisor)
         self.rx = UartRx(divisor)
 
@@ -155,7 +155,7 @@ def run_scenario(frames, *, baud: int = DEFAULT_BAUD, cycles: int = 15_000,
 
 
 def run(*, vcd: str | None = None) -> None:
-    """The ``xsynth sim --phase 2`` entry point: a short, readable demo."""
+    """The ``xsynth sim --design control`` entry point: a short, readable demo."""
     tone = 10_000.0
     step = phase_step(tone, TEST_SAMPLE_RATE)
 

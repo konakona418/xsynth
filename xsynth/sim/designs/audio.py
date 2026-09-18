@@ -1,4 +1,4 @@
-"""Phase 1 simulation: the DDS over 0.1 s of audio.
+"""The audio design in simulation: the DDS over 0.1 s of audio.
 
 Drives the strobe at exactly the hardware rate (one pulse per 525 pixel clocks)
 and checks the tone the accumulator actually produces, rather than the tone we

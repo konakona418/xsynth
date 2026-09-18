@@ -1,7 +1,7 @@
-"""Phase 1: video plus a real 48 kHz audio path.
+"""The audio design: video plus a real 48 kHz audio path.
 
-Acceptance gate: the Phase 0 picture **and** an audible 440 Hz
-tone. Unlike Phase 0 this builds a true HDMI signal (``DVI_OUTPUT=0``), so the
+Acceptance gate: the video picture **and** an audible 440 Hz tone.
+Unlike the video design this builds a true HDMI signal (``DVI_OUTPUT=0``), so the
 data-island machinery is now in the critical path.
 
 The tone is a single :class:`~xsynth.hdl.audio.SineDDS` voice advanced once per
@@ -16,7 +16,7 @@ from amaranth import Elaboratable, Module, Signal
 from xsynth.hdl.audio import DEFAULT_TONE_HZ, SAMPLE_BITS, SineDDS, phase_step
 from xsynth.hdl.clock import ClockDomains, PowerOnReset, XsynthClocks
 from xsynth.hdl.hdmi import HDMIOutput
-from xsynth.hdl.phase0 import StatusLeds
+from xsynth.hdl.designs.video import StatusLeds
 from xsynth.hdl.video import make_pattern
 from xsynth.hdl.video_modes import DEFAULT_MODE, VideoMode
 
@@ -43,7 +43,7 @@ class AudioLeds(Elaboratable):
         return m
 
 
-class Phase1(Elaboratable):
+class Audio(Elaboratable):
     def __init__(self, mode: VideoMode = DEFAULT_MODE, *, audio_bits: int = 16,
                  pattern: str = "bars", tone_hz: float = DEFAULT_TONE_HZ):
         if audio_bits != SAMPLE_BITS:
@@ -86,7 +86,7 @@ class Phase1(Elaboratable):
             pattern.cy.eq(hdmi.cy),
             hdmi.rgb.eq(pattern.rgb),
             dds.strobe.eq(clocks.audio_strobe),
-            # A mono tone for now; Phase 2 splits the voices across channels.
+            # A mono tone for now; the control design splits the voices across channels.
             hdmi.audio_left.eq(dds.sample),
             hdmi.audio_right.eq(dds.sample),
             hdmi_pins.d.o.eq(hdmi.tmds),

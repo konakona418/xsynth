@@ -1,6 +1,6 @@
-"""Phase 2 end to end in simulation: UART in, voice parameters and audio out.
+"""The control design end to end in simulation: UART in, voice parameters and audio out.
 
-The harness and the scenario runner live in :mod:`xsynth.sim.phase2`; this file
+The harness and the scenario runner live in :mod:`xsynth.sim.designs.control`; this file
 is the assertions. The core runs at a deliberately fast baud so a whole frame
 fits in a few thousand cycles; the wire format is identical to the board's.
 """
@@ -28,8 +28,8 @@ from xsynth.protocol import (
     encode_commands,
     encode_frame,
 )
-from xsynth.sim.phase1 import measure_frequency
-from xsynth.sim.phase2 import TEST_SAMPLE_RATE, run_scenario
+from xsynth.sim.designs.audio import measure_frequency
+from xsynth.sim.designs.control import TEST_SAMPLE_RATE, run_scenario
 
 
 def test_ping_is_answered_with_a_pong():

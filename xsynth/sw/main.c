@@ -1,4 +1,4 @@
-/* Phase 4b firmware: the wiring, and nothing else.
+/* The firmware: the wiring, and nothing else.
  *
  * The hardware does the wire -- UART, framing and CRC. What reaches this
  * program is a stream of already-validated frames, each announced by a header

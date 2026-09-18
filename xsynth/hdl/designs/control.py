@@ -1,4 +1,4 @@
-"""Phase 2: UART control of the wavetable voice.
+"""The control design: UART control of the wavetable voice.
 
 Acceptance gate: the host can turn notes on and off and change
 frequency and waveform in real time, malformed frames do not disturb later
@@ -14,8 +14,8 @@ The frame decoder validates the checksum before anything reaches the FIFO, and
 the scheduler applies each command on a 48 kHz sample boundary, so a command can
 never land in the middle of a sample.
 
-:class:`Phase2Core` is everything except the clocks, the board pins and the HDMI
-black box, so it can be simulated directly; :class:`Phase2` wraps it for the
+:class:`ControlCore` is everything except the clocks, the board pins and the HDMI
+black box, so it can be simulated directly; :class:`Control` wraps it for the
 board.
 """
 
@@ -30,8 +30,8 @@ from xsynth.hdl.framing import FrameDecoder, FrameTx
 from xsynth.hdl.hdmi import HDMIOutput
 from xsynth.hdl.loader import ProgramLoader
 from xsynth.hdl.mailbox import FrameMailbox
-from xsynth.hdl.phase0 import StatusLeds
-from xsynth.hdl.phase1 import AudioLeds
+from xsynth.hdl.designs.video import StatusLeds
+from xsynth.hdl.designs.audio import AudioLeds
 from xsynth.hdl.pcpi import CommandCoProcessor
 from xsynth.hdl.uart import UartRx, UartTx, uart_timing
 from xsynth.hdl.video import make_pattern
@@ -308,7 +308,7 @@ class PacketHandler(Elaboratable):
         return m
 
 
-class Phase2Core(Elaboratable):
+class ControlCore(Elaboratable):
     """The control and audio path, without clocks, pins or HDMI."""
 
     def __init__(self, *, baud: int = DEFAULT_BAUD,
@@ -317,8 +317,8 @@ class Phase2Core(Elaboratable):
         self.baud = baud
         self.fifo_depth = fifo_depth
         self.control_clock_hz = control_clock_hz
-        # Phase 3 adds the soft core alongside the engine; with no SoC this is
-        # exactly the phase 2 design.
+        # The firmware design adds the soft core alongside the engine; with no
+        # SoC this is exactly the control design.
         self.soc = soc
 
         self.rx = Signal(init=1)
@@ -332,7 +332,7 @@ class Phase2Core(Elaboratable):
         self.samples = Signal(32)
 
         # The engine is built here rather than in elaborate so that the
-        # simulations and the phase 3 testbench can name its signals as
+        # simulations and the firmware testbench can name its signals as
         # top-level ports before the design is elaborated.
         self.voice = VoiceBank()
         # Voice 0's envelope level: the note's amplitude, for the harnesses to
@@ -462,8 +462,8 @@ class Phase2Core(Elaboratable):
         return m
 
 
-class Phase2(Elaboratable):
-    """Phase 2 on the board: clocks, pins, HDMI and the core."""
+class Control(Elaboratable):
+    """The control design on the board: clocks, pins, HDMI and the core."""
 
     def __init__(self, mode: VideoMode = DEFAULT_MODE, *, audio_bits: int = 16,
                  pattern: str = "bars", baud: int = DEFAULT_BAUD,
@@ -480,8 +480,8 @@ class Phase2(Elaboratable):
         self.fifo_depth = fifo_depth
 
     def make_core(self):
-        """The control and audio core; phase 3 overrides this to add the SoC."""
-        return Phase2Core(baud=self.baud, fifo_depth=self.fifo_depth)
+        """The control and audio core; the firmware design adds the SoC."""
+        return ControlCore(baud=self.baud, fifo_depth=self.fifo_depth)
 
     def elaborate(self, platform):
         m = Module()

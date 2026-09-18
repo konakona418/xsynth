@@ -14,24 +14,28 @@ Built and verified on hardware: full HDMI video (640x480@60), 48 kHz / 16-bit
 stereo audio, live control of the engine over the USB UART, and a soft core that
 runs programs the host uploads -- including the one that owns the command path.
 
-| Phase | Deliverable | State |
-| --- | --- | --- |
-| 0 | 640x480@60 video, PLL bring-up | built, verified on hardware |
-| 1 | 48 kHz HDMI audio + 440 Hz test tone | built, verified on hardware |
-| 2 | UART -> command FIFO -> wavetable voice | built, verified on hardware |
-| 3a | PicoRV32 SoC + program upload | built, verified on hardware |
-| 3b | PCPI, firmware owns the command path | built, verified on hardware |
-| 4a | 8-voice engine, ADSR, saturating mix | built, verified on hardware |
-| 4b | Firmware voice allocation + sequencing | built, verified on hardware |
-| 5 | Sample-accurate sequencer | closed by 4b |
-| 6 | Custom LLVM toolchain | dropped by decision |
+A build is one of four *bring-up designs*, each named for the layer it adds and
+containing the ones before it, so a failure can be isolated to a layer. `--design
+firmware` is the full system and the default:
 
-Phase 4 was planned with a filter; it was dropped in favour of band-limited
-wavetables, which fix aliasing at its source rather than after it. That work is
-deferred and not scheduled against any phase, so the saw and square tables are
-naive and alias. Phase 6 would have been an LLVM fork to give C a custom
-instruction; the channel is two instructions already, and the fork's whole
-payoff was turning two inline `asm` statements into two intrinsics.
+| `--design` | What it adds | State |
+| --- | --- | --- |
+| `video` | 640x480@60 video, PLL bring-up | built, verified on hardware |
+| `audio` | 48 kHz HDMI audio + 440 Hz test tone | built, verified on hardware |
+| `control` | UART -> command FIFO -> wavetable voice | built, verified on hardware |
+| `firmware` | PicoRV32 + PCPI: the firmware owns the command path | built, verified on hardware |
+
+Everything above `control`'s single voice -- the eight-voice engine with ADSR
+and a saturating mix, the firmware's voice allocation and sequencing, and
+sample-accurate scheduling -- lives inside the `firmware` design rather than
+being a design of its own.
+
+An output filter was planned for the engine and dropped in favour of
+band-limited wavetables, which fix aliasing at its source rather than after it.
+That work is deferred and unscheduled, so the saw and square tables are naive
+and alias. A custom LLVM toolchain was also considered and dropped: the command
+channel is two instructions already, and the fork's whole payoff was turning two
+inline `asm` statements into two intrinsics.
 
 ## Toolchain
 
@@ -64,8 +68,8 @@ SRAM, which is volatile and survives until the board loses power; without it the
 bitstream goes to SPI flash and the board configures itself at power-up:
 
 ```bash
-uv run xsynth build --phase 3 --no-flash    # SRAM: gone at power-off
-uv run xsynth build --phase 3               # flash: boots itself
+uv run xsynth build --design firmware --no-flash   # SRAM: gone at power-off
+uv run xsynth build --design firmware              # flash: boots itself
 ```
 
 `--no-flash` is the right default while the design is changing, because a power
@@ -269,10 +273,10 @@ busy engine slows the sequencer down instead of losing notes.
 ```
 xsynth/
   cli.py           command line entry point
-  design.py        phase composition, build/simulate drivers
+  design.py        design registry, build/simulate drivers
   firmware.py      builds the RISC-V firmware with clang/ld.lld
   protocol.py      the control protocol, shared with the host tools
-  hdl/             Amaranth RTL
+  hdl/             Amaranth RTL; hdl/designs/ is the four bring-up designs
   host/            serial client, score player, capture-card recorder
   platform/        board definitions, Gowin primitives, toolchain patches
   sim/             simulation benches (Amaranth, and iverilog for the CPU)
@@ -284,9 +288,9 @@ scores/            example scores, and where they came from
 tests/             pytest suite
 ```
 
-`uv run xsynth sim --phase 2` runs a design in the Amaranth simulator with no
-toolchain at all, which is the fast way to see a change before a six-minute
-build.
+`uv run xsynth sim --design control` runs a design in the Amaranth simulator
+with no toolchain at all, which is the fast way to see a change before a
+six-minute build.
 
 ## Notes on the Gowin flow
 

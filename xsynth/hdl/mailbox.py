@@ -1,8 +1,8 @@
 """A byte path from validated UART frames to the soft core.
 
 The frame decoder reassembles and CRC-checks a whole payload before it replays
-a single byte. In phase 2 those bytes went straight into the command FIFO. In
-phase 3 they go to the CPU instead: the core owns voice allocation and
+a single byte. Without the soft core those bytes would go straight into the
+command FIFO; with it they go to the CPU instead: the core owns voice allocation and
 sequencing, and reaches the engine through the co-processor.
 
 The CPU reads 16-bit words. A frame is announced by a header word::

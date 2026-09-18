@@ -17,4 +17,4 @@ rather than by editing the vendored files, so that re-vendoring stays cheap.
   correct because the TMDS clock is one bit period per pixel.
 - Upstream uses `parameter real VIDEO_RATE` and floating point arithmetic to
   derive the audio clock regeneration N/CTS values. Open-source synthesis may
-  not support this; see `PLAN.md` Phase 0.
+  not support this; the Apicula flow used here handles it.

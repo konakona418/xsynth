@@ -1,8 +1,8 @@
 """The synth engine: several wavetable voices, an ADSR each, and a mix.
 
-Phase 1's :class:`~xsynth.hdl.audio.SineDDS` stays as it is (it is verified on
-hardware and is the reference for the 32-bit accumulator). This module is the
-parameterised engine Phase 4 calls for.
+:class:`~xsynth.hdl.audio.SineDDS` stays as it is (it is verified on hardware
+and is the reference for the 32-bit accumulator). This module is the
+parameterised engine the synth is built on.
 
 **One table read port, many voices.** A voice needs a wavetable lookup per
 sample, and the tables live in one BSRAM. BSRAM ports are far too precious to

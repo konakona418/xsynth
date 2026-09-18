@@ -1,4 +1,4 @@
-"""Phase 3: the PicoRV32 soft core, its program memory and its peripherals.
+"""The PicoRV32 soft core, its program memory and its peripherals.
 
 The CPU sees one flat 32-bit address space::
 

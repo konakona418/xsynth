@@ -35,7 +35,7 @@ def test_bars_are_distinct_and_ordered_white_to_black():
     assert len(set(colours.values())) == NUM_BARS
 
 
-def test_phase0_simulation_passes():
-    from xsynth.sim.phase0 import run
+def test_video_simulation_passes():
+    from xsynth.sim.designs.video import run
 
     run()

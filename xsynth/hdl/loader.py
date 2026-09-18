@@ -1,4 +1,4 @@
-"""The phase 3 program loader: turn LOAD frames into memory writes.
+"""The program loader: turn LOAD frames into memory writes.
 
 The loader has to be hardware. It is what puts a program into memory in the
 first place, so there is no CPU yet to do it, and afterwards it is the only

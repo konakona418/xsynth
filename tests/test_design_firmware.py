@@ -1,4 +1,4 @@
-"""Phase 3b: the soft core owns the command path.
+"""The firmware design: the soft core owns the command path.
 
 The acceptance gate is that an uploaded PicoRV32 program drives
 the engine through the command FIFO, and that a full FIFO stalls the CPU rather
@@ -16,9 +16,9 @@ from xsynth.protocol import (
     encode_commands,
     encode_run,
 )
-from xsynth.sim.phase2 import PIXEL_HZ as PHASE2_PIXEL_HZ
-from xsynth.sim.phase2 import STROBE_PERIOD
-from xsynth.sim.phase3 import PIXEL_HZ, program_words, simulate
+from xsynth.sim.designs.control import PIXEL_HZ as CONTROL_PIXEL_HZ
+from xsynth.sim.designs.control import STROBE_PERIOD
+from xsynth.sim.designs.firmware import PIXEL_HZ, program_words, simulate
 
 TEST_SAMPLE_RATE = PIXEL_HZ // STROBE_PERIOD
 

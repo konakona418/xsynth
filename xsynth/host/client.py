@@ -1,4 +1,4 @@
-"""Serial client for the Phase 2 command protocol.
+"""Serial client for the control protocol.
 
 Typical use::
 

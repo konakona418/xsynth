@@ -1,6 +1,6 @@
 """Audio generation.
 
-Phase 1 is a single real DDS voice: a 32-bit phase accumulator advances once per
+One real DDS voice: a 32-bit phase accumulator advances once per
 48 kHz sample and addresses a 4096-entry, 16-bit sine table held in BSRAM.
 
 **The sample is signed two's complement.** HDMI L-PCM is signed, and

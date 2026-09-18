@@ -1,4 +1,4 @@
-"""Phase 0: clock generation + DVI video output.
+"""The video design: clock generation + DVI video output.
 
 Acceptance gate: a stable 640x480 @ 60.00 Hz picture on the
 monitor. Audio is disabled (``DVI_OUTPUT=1``) so that the HDMI data-island
@@ -48,7 +48,7 @@ class StatusLeds(Elaboratable):
         return m
 
 
-class Phase0(Elaboratable):
+class Video(Elaboratable):
     def __init__(self, mode: VideoMode = DEFAULT_MODE, *, audio_bits: int = 16,
                  pattern: str = "bars"):
         self.mode = mode

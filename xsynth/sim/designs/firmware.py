@@ -1,11 +1,11 @@
-"""Phase 3 simulation: the whole control path, soft core included.
+"""The firmware design in simulation: the whole control path, soft core included.
 
 Amaranth's own simulator cannot execute the Verilog PicoRV32, so this harness
 emits the design and drives it from a plain Verilog testbench. The program is
 preloaded into the SoC's memory (``init=``), and everything after that goes over
 the wire: a RUN frame starts the core, and COMMANDS frames travel UART -> frame
 decoder -> mailbox -> firmware -> co-processor -> command FIFO -> scheduler, so
-one passing run exercises every link in the phase 3 chain.
+one passing run exercises every link in the chain.
 
 The testbench drives the UART by hand rather than instantiating one, because it
 is the *host* end of the link and should not share logic with the device under
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from amaranth import Elaboratable, Module
 
-from xsynth.hdl.phase2 import Phase2Core
+from xsynth.hdl.designs.control import ControlCore
 from xsynth.hdl.soc import PICORV32_SOURCE, SoC
 from xsynth.sim.verilog import run as run_verilog
 
@@ -38,14 +38,14 @@ DEFAULT_TIMEOUT = 20_000
 DEFAULT_MEM_WORDS = 2048
 
 
-class Phase3Harness(Elaboratable):
-    """A phase 3 core with the ports a Verilog testbench needs."""
+class FirmwareHarness(Elaboratable):
+    """A firmware core with the ports a Verilog testbench needs."""
 
     def __init__(self, *, program=(), baud: int = BAUD,
                  clock_hz: int = CONTROL_HZ, fifo_depth: int = 16,
                  mem_words: int = DEFAULT_MEM_WORDS):
         self.soc = SoC(mem_words=mem_words, init=list(program))
-        self.core = Phase2Core(baud=baud, fifo_depth=fifo_depth,
+        self.core = ControlCore(baud=baud, fifo_depth=fifo_depth,
                                control_clock_hz=clock_hz, soc=self.soc)
 
     def elaborate(self, platform):
@@ -108,7 +108,7 @@ module testbench;
     wire [15:0] mailbox_pushed;
     wire [15:0] mailbox_popped;
 
-    phase3 dut(
+    firmware dut(
         .clk(clk), .rst(rst), .pixel_clk(pixel_clk), .pixel_rst(pixel_rst),
         .rx(rx), .tx(tx), .locked(locked), .audio_strobe(audio_strobe),
         .sample(sample), .amp(amp), .fifo_level(fifo_level),
@@ -188,11 +188,11 @@ class Result:
 def simulate(frames, *, program=(), condition: str,
              timeout: int = DEFAULT_TIMEOUT, mem_words: int = DEFAULT_MEM_WORDS,
              keep: str | None = None) -> Result:
-    """Run a phase 3 core with ``program`` loaded, sending ``frames``."""
-    harness = Phase3Harness(program=program, mem_words=mem_words)
+    """Run a firmware core with ``program`` loaded, sending ``frames``."""
+    harness = FirmwareHarness(program=program, mem_words=mem_words)
     output = run_verilog(
         harness,
-        name="phase3",
+        name="firmware",
         ports=ports(harness),
         testbench=testbench(frames, condition=condition, timeout=timeout),
         sources=[PICORV32_SOURCE],
@@ -210,7 +210,7 @@ def program_words(image: bytes) -> list[int]:
 
 
 def run(*, vcd: str | None = None) -> None:
-    """The ``xsynth sim --phase 3`` entry point: a short, readable demo.
+    """The ``xsynth sim --design firmware`` entry point: a short, readable demo.
 
     The ``vcd`` argument is accepted for symmetry with the other phases; this
     bench runs under iverilog, which writes its own dump when asked.

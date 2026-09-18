@@ -1,4 +1,4 @@
-"""Simulate the phase 3 SoC: load a program, run it, watch the CPU.
+"""Simulate the SoC: load a program, run it, watch the CPU.
 
 The point of this testbench is the glue, not the CPU: it drives the loader port
 the way the host will, then checks that a real PicoRV32 fetches and executes

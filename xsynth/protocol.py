@@ -51,7 +51,7 @@ OP_SET_WAVE = 0x04
 OP_SET_AMP = 0x05
 OP_RESET = 0x06
 
-# Phase 4. The envelope settings are global (one set of rates shared by every
+# The envelope settings are global (one set of rates shared by every
 # voice, as on almost every synth); the envelope *state* is per voice. The
 # remaining per-voice opcodes are addressed by the command's voice field.
 OP_SET_ATTACK = 0x07
@@ -60,7 +60,7 @@ OP_SET_SUSTAIN = 0x09
 OP_SET_RELEASE = 0x0A
 OP_SET_MASTER = 0x0B
 
-# Phase 4b. These two are addressed to the *firmware*, not the engine, and are
+# These two are addressed to the *firmware*, not the engine, and are
 # never pushed into the command FIFO. The anchor exists so that a host can
 # express absolute times without a second packet type: the mailbox forwards
 # exactly one, and the engine's own scheduler already counts samples between

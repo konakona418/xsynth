@@ -1,5 +1,5 @@
 # amaranth: UnusedElaboratable=disable
-"""The phase 3 program loader."""
+"""The program loader."""
 
 from amaranth.sim import Simulator
 
